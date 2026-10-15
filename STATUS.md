@@ -7,7 +7,9 @@ repository. M2 (policy service in the operator daemon, `enforcement` election
 through issuance, registry validation) is not in scope.
 
 Two network-enforced assets (NEPLT, NEPL2) have been issued on the public
-testnet through `openampd`; see the README's "Network-enforced issuance".
+testnet through `openampd`, the policy server in the
+[`openamp`](https://github.com/ConcatenaLabs/openamp) repository; see its
+README's "Network-enforced issuance".
 
 **The headline: every predicate the design document specifies for the covenant is
 enforced by consensus — confinement, the whitelist, the blacklist, the transfer
@@ -418,7 +420,8 @@ unforgeable.
 **Fixed input-zero position** for the verifier, as the design document accepts.
 
 Mirrors: `src/dmt.rs`, `gomirror/dmt/` (stdlib-only Go, tests asserting the same
-golden roots), and `openampd/internal/damp/dmt/`. The Go side also mirrors the
+golden roots), and `openampd/internal/damp/dmt/` in the `openamp` repository.
+The Go side also mirrors the
 verifier taptree, and `TestEveryShapeControlBlockMatchesVectors` checks every
 leaf's control block against the Rust vectors.
 
