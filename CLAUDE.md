@@ -9,10 +9,9 @@ them, the `opendamp` command-line tool, and the CMR pinning file
 
 `README.md` covers the tool, `STATUS.md` records what is and is not enforced by
 consensus and how each claim is proved, and `SPEC-dmt-v1.md` is the frozen tree
-format. Read `STATUS.md` before describing a policy to anyone. The protocol
-design is `doc/sequentia/opendamp-design.md` in the
-[`Sequentia`](https://github.com/ConcatenaLabs/Sequentia) repository, which also
-carries the node and consensus conventions.
+format. Read `STATUS.md` before describing a policy to anyone. `DESIGN.md` is the
+protocol. The node and consensus conventions are in the
+[`Sequentia`](https://github.com/ConcatenaLabs/Sequentia) repository.
 
 The policy service that publishes snapshots and issues network-enforced assets
 is `openampd`, in the [`openamp`](https://github.com/ConcatenaLabs/openamp)
