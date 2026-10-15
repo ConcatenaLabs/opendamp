@@ -5,8 +5,8 @@
 //!     cargo test --test regtest -- --ignored --nocapture
 //!
 //! Binary discovery: $OPENDAMP_NODE_BIN (path to sequentiad), else
-//! ../Sequentia/src/sequentiad relative to the openamp checkout (a node
-//! checkout beside this one), else its legacy src/elementsd name. The
+//! ../Sequentia/src/sequentiad relative to this checkout (a node checkout
+//! beside this one), else its legacy src/elementsd name. The
 //! matching *-cli binary must sit next to it.
 //!
 //! Proves, printing every txid:
@@ -55,8 +55,8 @@ impl Node {
         let candidates: Vec<PathBuf> = match std::env::var("OPENDAMP_NODE_BIN") {
             Ok(p) => vec![PathBuf::from(p)],
             Err(_) => {
-                // CARGO_MANIFEST_DIR is <checkout>/opendamp.
-                let node_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Sequentia/src");
+                // CARGO_MANIFEST_DIR is the root of this checkout.
+                let node_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Sequentia/src");
                 vec![node_src.join("sequentiad"), node_src.join("elementsd")]
             }
         };
