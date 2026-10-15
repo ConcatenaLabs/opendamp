@@ -14,8 +14,7 @@ asset; every spend of it must be accompanied by the asset's **verifier**,
 that checks the policy `pi` against every regulated input and output. The
 issuer moves the verifier to a new policy with an update, and stops the asset
 altogether with a halt. `programs/*.simf` are the programs;
-[`doc/sequentia/opendamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/opendamp-design.md)
-in the node repository is the design,
+[`DESIGN.md`](DESIGN.md) is the design,
 and `STATUS.md` here is the record of what is proven against a node.
 
 ## Build and test

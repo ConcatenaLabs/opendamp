@@ -2,8 +2,7 @@
 
 Scope of this crate: milestones **M1** (the real Simplicity covenants, with a
 functional proof on `elementsregtest`) and **M3** (offline transfer
-construction) of `doc/sequentia/opendamp-design.md` in the Sequentia
-repository. M2 (policy service in the operator daemon, `enforcement` election
+construction) of [`DESIGN.md`](DESIGN.md). M2 (policy service in the operator daemon, `enforcement` election
 through issuance, registry validation) is not in scope.
 
 Two network-enforced assets (NEPLT, NEPL2) have been issued on the public
