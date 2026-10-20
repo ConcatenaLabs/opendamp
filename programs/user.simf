@@ -44,10 +44,11 @@
  *   - A HALT must BURN V, not park it at an address. `txbuild::burn_spk` is the
  *     default, and an OP_RETURN output can never be an input, so after a burn
  *     halt no q-of-V output exists at all and A is frozen rather than freed.
- *   - V's REISSUANCE authority is as sensitive as the issuer key I. Minting q of
- *     V to an ordinary address is a complete bypass of the policy, so retaining
- *     it to run parallel verifier outputs (design document section 6) means
- *     retaining a second key of the same criticality.
+ *   - V's REISSUANCE token lives in its own covenant (`sequentia/verifier-token`
+ *     in the sequentia-contracts repository), which mints q of V only into the
+ *     verifier covenant it last recorded, signed by I. Held in a wallet, the
+ *     token would mint q of V to an ordinary address, a complete bypass of the
+ *     policy; in its covenant it is no more sensitive than I.
  *
  * An earlier revision of this program tried to close the gap in the covenant, by
  * requiring output 0 to recreate input 0's script unless the issuer signed. It

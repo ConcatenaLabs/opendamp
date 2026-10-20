@@ -49,9 +49,9 @@ into a product choice instead of a design argument.
   for A is governed outside the protocol, but any later issuance of A must
   enter user covenants, or the issuer has created unregulated units.
 - The issuer also creates a distinct **verifier asset** V. A valid verifier
-  output carries a fixed amount q of V. Retaining V's reissuance authority
-  lets the issuer create parallel verifier outputs as demand grows, which
-  reduces contention.
+  output carries a fixed amount q of V. V's reissuance token is held by a
+  covenant (section 6) that resumes a halted asset, and lets the issuer create
+  parallel verifier outputs as demand grows, which reduces contention.
 - A **holder** controls an x-only key X and receives A in a user covenant
   C_U(X).
 
@@ -344,13 +344,15 @@ work: pi commits to asset A's id (section 3.1), and A's id commits to its
 contract, so a contract carrying pi_0 would have to contain a hash of itself.
 The setup order resolves it without a circular commitment:
 
-1. Issue V (q units) to an ordinary wallet output. V's id depends on nothing
-   about A.
+1. Issue V (q units) and its reissuance token, explicitly, to ordinary wallet
+   outputs. V's id depends on nothing about A.
 2. Issue A with the block above naming V, minting straight into user
    covenants.
 3. Compute pi_0 from A's now-known id and the genesis predicate roots.
-4. Move the q units of V into C_V(pi_0). Only from this point can any
-   transfer of A settle, so there is no window in which A moves unpoliced.
+4. Move the q units of V into C_V(pi_0), and in the same transaction V's
+   reissuance token into its covenant recording C_V(pi_0) (section 6). Only
+   from this point can any transfer of A settle, so there is no window in which
+   A moves unpoliced, and from this point no wallet holds V's token.
 5. Publish snapshot seq 0.
 
 The genesis policy is instead authenticated the same way every later policy
@@ -370,20 +372,33 @@ verifier output on chain being the binding fact a holder verifies against.
   frozen, which is what a halt is supposed to mean. Resuming means reissuing V.
   `IssuerReq::halt_to_burn` is the supported path and
   `halt_leaves_live_verifier_asset` names the alternative for a caller that
-  insists on it.
-- **Parallel verifier outputs**: with retained V reissuance authority the
-  issuer may run N verifier outputs to reduce the spending race. Keeping
+  insists on it. The halt spends V's token covenant beside the verifier, which
+  records the verifier being burned.
+- **Resume**: V's reissuance token lives in a covenant of its own,
+  `sequentia/verifier-token` (in the
+  [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts)
+  repository), from the issuance on. Signed by I, it reissues exactly q of V into
+  the verifier covenant it last recorded, and nowhere else: not to another
+  script, not in another amount, not beside another output of V. It records
+  only the script of a coin that holds exactly q of V, which by the invariant of
+  section 2.1 is a verifier, so the token never creates a new place for V. A
+  halt records the verifier it burns, and the resume restores that policy; an
+  update through G(I) moves on from there.
+- **Parallel verifier outputs**: through V's token covenant the issuer may
+  run N verifier outputs under the recorded policy to reduce the spending race,
+  each a resume while the recorded verifier is still live. Keeping
   their policy versions consistent during an update is an operational
   runbook item: update all outputs in one transaction where possible, or
   publish the union semantics (a transfer is valid under the pi its chosen
   verifier input commits to).
 
-  **V's reissuance authority is as sensitive as the issuer key I.** Minting q of
-  V to an ordinary address is a complete bypass of the policy by the route in
-  section 2.1, so retaining that authority to run parallel outputs means
-  retaining a second key of the same criticality, held the same way. Destroying
-  it after setup is the safer default, at the cost of a single verifier output
-  and the spending race that comes with it.
+  **V's reissuance token is no more sensitive than the issuer key I.**
+  Minting q of V to an ordinary address is a complete bypass of the policy by
+  the route in section 2.1, which is why the token is never held in a wallet:
+  its covenant mints only into a recorded verifier and only under I's
+  signature. I itself keeps the power G(I) gives it over a live verifier,
+  including sending its V to any script it signs for; the covenant does not
+  narrow that, and I remains the asset's root of trust.
 - **Redemption**: the primary path has no redemption exit. The issuer path
   still permits an informal exit: a collaborating holder and the issuer can
   move A outside confinement (both signatures required; a holder who does
@@ -420,8 +435,9 @@ Inherited from the DAMP paper with Sequentia specifics:
   `tests/cost_profile.rs` asserts that margin per shape (1.3x to 2.3x today) and
   fails rather than letting a widened scan produce an unspendable leaf.
 - **Confinement rests on an unverifiable invariant**: q of V must never exist
-  outside a verifier covenant (section 2.1). Halt burns V and V's reissuance
-  authority is key-critical (section 6); neither is optional.
+  outside a verifier covenant (section 2.1). Halt burns V, and V's reissuance
+  token is held by a covenant that mints only into a recorded verifier
+  (section 6); neither is optional.
 - **Fixed input-zero position**: functionally limiting (the paper notes it);
   accepted for v1.
 - **Throughput**: a single verifier output serialises every transfer of an

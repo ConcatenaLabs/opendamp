@@ -1199,8 +1199,11 @@ pub fn cosign_transfer(
 /// holder spend their C_U with no policy applied at all. An OP_RETURN output can
 /// never be an input, so a burn leaves no such output in existence and A is
 /// frozen, which is what a halt is supposed to mean. `halt_to_burn` is the
-/// supported path; resuming means reissuing V, which is why the issuer keeps
-/// that authority - and why that authority is as sensitive as the issuer key.
+/// supported path; resuming means reissuing V. V's reissuance token lives in
+/// its own covenant (`sequentia/verifier-token`), which mints V only in the
+/// amount q and only into the verifier covenant it last recorded, so a halt
+/// records the verifier it burns ([`complete_issuer_op_recording`]) and the
+/// resume restores it.
 pub struct IssuerReq {
     pub verifier_outpoint: OutPoint,
     /// The context whose C_V(pi') receives V; None = halt.
@@ -1253,6 +1256,52 @@ pub fn complete_issuer_op(
     issuer_privkey: &[u8; 32],
     fee_privkey: &[u8; 32],
 ) -> Result<Transaction, String> {
+    issuer_op(old_ctx, new_ctx, req, None, issuer_privkey, fee_privkey).map(|(tx, _)| tx)
+}
+
+/// The coin of the verifier asset's token covenant (`sequentia/verifier-token`
+/// in the `sequentia-contracts` repository), spent beside an issuer operation
+/// so that it records the verifier at input 0. The covenant's own signature is
+/// added afterwards by `token-covenants verifier-token record`, which checks
+/// what this side cannot: that `successor_spk` is the covenant recording input
+/// 0's script.
+pub struct TokenRecord {
+    pub outpoint: OutPoint,
+    /// V's reissuance token, which the coin holds explicitly.
+    pub token: AssetId,
+    pub value: u64,
+    /// The coin's script: the covenant recording the verifier it records now.
+    pub script_pubkey: Script,
+    /// The covenant recording this operation's input 0, from
+    /// `token-covenants verifier-token address --verifier <C_V(pi) scriptPubKey>`.
+    pub successor_spk: Script,
+}
+
+/// An issuer operation that also records the verifier it spends: the halt
+/// that burns V records the verifier a resume will restore. Input 0 is the
+/// verifier, signed here through G(I); input 1 is the token covenant, left
+/// unsigned for `token-covenants verifier-token record`; input 2 the fee coin,
+/// signed here. Output 1 is the token covenant's successor. Returns the
+/// transaction and the outputs its inputs spend, in input order.
+pub fn complete_issuer_op_recording(
+    old_ctx: &Ctx,
+    new_ctx: Option<&Ctx>,
+    req: &IssuerReq,
+    token: &TokenRecord,
+    issuer_privkey: &[u8; 32],
+    fee_privkey: &[u8; 32],
+) -> Result<(Transaction, Vec<TxOut>), String> {
+    issuer_op(old_ctx, new_ctx, req, Some(token), issuer_privkey, fee_privkey)
+}
+
+fn issuer_op(
+    old_ctx: &Ctx,
+    new_ctx: Option<&Ctx>,
+    req: &IssuerReq,
+    token: Option<&TokenRecord>,
+    issuer_privkey: &[u8; 32],
+    fee_privkey: &[u8; 32],
+) -> Result<(Transaction, Vec<TxOut>), String> {
     let old_cv = old_ctx.cv_info();
     let dest_spk = match (&req.halt_spk, new_ctx) {
         (Some(spk), _) => spk.clone(),
@@ -1265,20 +1314,28 @@ pub fn complete_issuer_op(
     }
     let fee_change = fee_value - req.fee_amount;
 
-    let inputs = vec![plain_input(req.verifier_outpoint), plain_input(fee_op)];
-    let prevouts = vec![
-        explicit_out(
-            old_ctx.params.asset_v,
-            old_ctx.params.q,
-            old_cv.script_pubkey.clone(),
-        ),
-        explicit_out(fee_asset, fee_value, p2tr_keypath_spk(&req.fee_key)),
-    ];
+    let mut inputs = vec![plain_input(req.verifier_outpoint)];
+    let mut prevouts = vec![explicit_out(
+        old_ctx.params.asset_v,
+        old_ctx.params.q,
+        old_cv.script_pubkey.clone(),
+    )];
     let mut outputs = vec![explicit_out(
         old_ctx.params.asset_v,
         old_ctx.params.q,
         dest_spk,
     )];
+    if let Some(t) = token {
+        if t.token == old_ctx.params.asset_v || t.token == fee_asset {
+            return Err("the token coin must hold V's reissuance token, not V or the fee asset".into());
+        }
+        inputs.push(plain_input(t.outpoint));
+        prevouts.push(explicit_out(t.token, t.value, t.script_pubkey.clone()));
+        outputs.push(explicit_out(t.token, t.value, t.successor_spk.clone()));
+    }
+    let fee_index = inputs.len();
+    inputs.push(plain_input(fee_op));
+    prevouts.push(explicit_out(fee_asset, fee_value, p2tr_keypath_spk(&req.fee_key)));
     if fee_change > 0 {
         outputs.push(explicit_out(fee_asset, fee_change, req.fee_change_spk.clone()));
     }
@@ -1308,7 +1365,7 @@ pub fn complete_issuer_op(
 
     // Fee input.
     let prevouts_clone = prevouts.clone();
-    sign_fee_input(&old_ctx.net, &mut tx, &prevouts_clone, 1, fee_privkey)?;
+    sign_fee_input(&old_ctx.net, &mut tx, &prevouts_clone, fee_index, fee_privkey)?;
 
-    Ok(tx)
+    Ok((tx, prevouts))
 }

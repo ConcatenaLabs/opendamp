@@ -22,8 +22,16 @@
 //!      further update restores her
 //!   8. BLACKLIST: an update listing one of alice's outpoints stops that UTXO
 //!      alone, and lifting the listing frees it again
-//!   6. halt: V to a plain address; afterwards no transfer can satisfy input 0
-//!      (last, because it ends every transfer)
+//!   6. halt: V burned, the burn recording the halted verifier in V's token
+//!      covenant; afterwards no transfer can satisfy input 0. Then the resume:
+//!      the token covenant reissues q of V into the recorded verifier, and a
+//!      transfer under the halted policy settles again
+//!
+//! V's reissuance token sits in the `sequentia/verifier-token` covenant of the
+//! sequentia-contracts repository from the issuance on. Its spends are built
+//! by that repository's `token-covenants` tool: $OPENDAMP_TOKEN_COVENANTS, else
+//! ../sequentia-contracts/tools/token-covenants/target/release/token-covenants
+//! beside this checkout.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -37,8 +45,9 @@ use opendamp::hexutil::hex;
 use opendamp::net::Net;
 use opendamp::programs::{self, AssetParams};
 use opendamp::txbuild::{
-    attach_simplicity, attach_verifier, build_transfer, complete_issuer_op, complete_transfer, covenant_env,
-    p2tr_keypath_spk, sig_all_digest, sign_bip340, sign_fee_input, Ctx, IssuerReq, TransferReq,
+    attach_simplicity, attach_verifier, build_transfer, complete_issuer_op, complete_issuer_op_recording,
+    complete_transfer, covenant_env, p2tr_keypath_spk, sig_all_digest, sign_bip340, sign_fee_input, Ctx, IssuerReq,
+    TokenRecord, TransferReq,
 };
 
 // ---------------------------------------------------------------- node driver
@@ -195,6 +204,45 @@ impl Drop for Node {
         }
         let _ = std::fs::remove_dir_all(&self.datadir);
     }
+}
+
+// ------------------------------------------------- the verifier token's tool
+
+fn token_tool() -> PathBuf {
+    let p = match std::env::var("OPENDAMP_TOKEN_COVENANTS") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../sequentia-contracts/tools/token-covenants/target/release/token-covenants"),
+    };
+    assert!(
+        p.is_file(),
+        "no token-covenants tool at {}; set OPENDAMP_TOKEN_COVENANTS or build sequentia-contracts' \
+         tools/token-covenants beside this checkout",
+        p.display()
+    );
+    p
+}
+
+/// One `token-covenants verifier-token` command; its JSON reply.
+fn token_cmd(args: &[&str], request: Option<&serde_json::Value>) -> serde_json::Value {
+    use std::io::Write as _;
+    let mut child = Command::new(token_tool())
+        .arg("verifier-token")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("token-covenants runs");
+    let input = request.map(|r| r.to_string()).unwrap_or_default();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "token-covenants {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("token-covenants prints JSON")
 }
 
 // ---------------------------------------------------------------- key helpers
@@ -423,8 +471,10 @@ fn regtest_end_to_end() {
     ]);
     let asset_a = asset_from_display(issue_a["asset"].as_str().unwrap());
     let q: u64 = 100_000;
+    // V with its reissuance token, explicit, which the issuance moves into the
+    // token covenant below: it is what resumes the asset after the halt.
     let issue_v = node.cli_json(&[
-        "-named", "issueasset", "assetamount=0.00100000", "tokenamount=0", "blind=false", &fee_arg,
+        "-named", "issueasset", "assetamount=0.00100000", "tokenamount=1", "blind=false", &fee_arg,
     ]);
     let asset_v = asset_from_display(issue_v["asset"].as_str().unwrap());
     node.generate(1, &mine_addr);
@@ -487,6 +537,39 @@ fn regtest_end_to_end() {
     let (op, atoms) = node.find_vout(&fund_fee, &fee_spk);
     let mut fee = Utxo { outpoint: op, value: atoms };
     let fee_amount: u64 = 50_000;
+
+    // V's token into its covenant, recording C_V(pi0): what the issuance does.
+    let issuer_key_file = node.datadir.join("issuer.key");
+    std::fs::write(&issuer_key_file, format!("{}\n", hex(&issuer_sk))).unwrap();
+    let issuer_key_path = issuer_key_file.display().to_string();
+    let token_hex = issue_v["token"].as_str().unwrap().to_string();
+    let entropy_v = issue_v["entropy"].as_str().unwrap().to_string();
+    let inst = token_cmd(
+        &[
+            "instance", "--verifier-asset", v_hex, "--token", &token_hex, "--entropy", &entropy_v,
+            "--amount", &q.to_string(), "--issuer-key", &issuer.to_string(),
+            "--verifier", &hex(cv0.script_pubkey.as_bytes()), "--genesis", &genesis,
+        ],
+        None,
+    );
+    let token_inst = node.datadir.join("verifier-token.json");
+    let mut inst_file = inst.clone();
+    inst_file.as_object_mut().unwrap().retain(|k, _| !["address", "verifier_script_pubkey"].contains(&k.as_str()));
+    std::fs::write(&token_inst, inst_file.to_string()).unwrap();
+    let token_inst = token_inst.display().to_string();
+    let token_addr = inst["address"]["elementsregtest"].as_str().unwrap().to_string();
+    let fund_token = node.cli(&[
+        "-named", "sendtoaddress", &format!("address={token_addr}"), "amount=1",
+        &format!("assetlabel={token_hex}"), &fee_label_arg,
+    ]);
+    node.generate(1, &mine_addr);
+    let token_spk = Script::from(
+        opendamp::hexutil::unhex(node.cli_json(&["getaddressinfo", &token_addr])["scriptPubKey"].as_str().unwrap())
+            .unwrap(),
+    );
+    let (token_op, token_atoms) = node.find_vout(&fund_token, &token_spk);
+    assert_eq!(token_atoms, 100_000_000, "the issuance's whole token moves in");
+    println!("PROOF 1b: V's token in its covenant recording C_V(pi0): {fund_token}");
 
     // A transfer request against the current chain state.
     let make_req = |sender: XOnlyPublicKey,
@@ -1077,6 +1160,9 @@ fn regtest_end_to_end() {
     // it at input zero and let any holder spend their C_U with no policy applied.
     // An OP_RETURN output can never be an input, so a burn leaves no such output
     // in existence.
+    //
+    // The same transaction spends V's token covenant at input 1, which records
+    // the verifier it burns, C_V(pi8): the policy a resume restores.
     let halt = IssuerReq::halt_to_burn(
         verifier_op,
         (fee.outpoint, policy_asset, fee.value),
@@ -1085,10 +1171,32 @@ fn regtest_end_to_end() {
         fee_spk.clone(),
     );
     assert!(!halt.halt_leaves_live_verifier_asset());
-    let tx = complete_issuer_op(&ctx8, None, &halt, &issuer_sk, &fee_sk).expect("halt");
-    let txid = node.cli(&["sendrawtransaction", &tx_hex(&tx)]);
+    let cv8_spk = ctx8.cv_info().script_pubkey.clone();
+    let succ = token_cmd(&["address", "--instance", &token_inst, "--verifier", &hex(cv8_spk.as_bytes())], None);
+    let record = TokenRecord {
+        outpoint: token_op,
+        token: asset_from_display(&token_hex),
+        value: token_atoms,
+        script_pubkey: token_spk.clone(),
+        successor_spk: Script::from(opendamp::hexutil::unhex(succ["script_pubkey"].as_str().unwrap()).unwrap()),
+    };
+    let (tx, prevouts) =
+        complete_issuer_op_recording(&ctx8, None, &halt, &record, &issuer_sk, &fee_sk).expect("halt");
+    let doc = serde_json::json!({
+        "tx": tx_hex(&tx),
+        "prevouts": prevouts.iter().map(|o| serde_json::json!({
+            "asset": o.asset.explicit().unwrap().to_string(),
+            "value": o.value.explicit().unwrap(),
+            "script_pubkey": hex(o.script_pubkey.as_bytes()),
+        })).collect::<Vec<_>>(),
+        "verifier": hex(cv0.script_pubkey.as_bytes()),
+    });
+    let signed = token_cmd(&["record", "--instance", &token_inst, "--key-file", &issuer_key_path], Some(&doc));
+    assert_eq!(signed["recorded"].as_str(), Some(hex(cv8_spk.as_bytes()).as_str()));
+    let txid = node.cli(&["sendrawtransaction", signed["hex"].as_str().unwrap()]);
     node.generate(1, &mine_addr);
-    println!("PROOF 6a: halt - V is burned to OP_RETURN, not parked: {txid}");
+    println!("PROOF 6a: halt - V is burned to OP_RETURN, not parked, and C_V(pi8) is recorded: {txid}");
+    let halt_txid = txid.clone();
     let halted_op = OutPoint::new(Txid::from_str(&txid).unwrap(), 0);
     let (o, v) = node.find_vout(&txid, &fee_spk);
     fee = Utxo { outpoint: o, value: v };
@@ -1107,6 +1215,51 @@ fn regtest_end_to_end() {
         .expect("assembles unvalidated");
     let reason = reject_reason(&node, &tx);
     println!("PROOF 6b: node rejects any transfer after the halt: {reason}");
+
+    // ================= 6d. RESUME through the token covenant
+    //
+    // q of V reissued into the verifier the halt recorded, and nowhere else:
+    // the covenant refuses any other script, amount or output of V (proved in
+    // sequentia-contracts' harness v1). The fee is a wallet coin.
+    let wallet_fee_addr = node.cli(&["getnewaddress"]);
+    let wallet_fee_tx = node.cli(&[
+        "-named", "sendtoaddress", &format!("address={wallet_fee_addr}"), "amount=0.01", &fee_label_arg,
+    ]);
+    node.generate(1, &mine_addr);
+    let wallet_fee_spk = Script::from(
+        opendamp::hexutil::unhex(node.cli_json(&["getaddressinfo", &wallet_fee_addr])["scriptPubKey"].as_str().unwrap())
+            .unwrap(),
+    );
+    let (wfee_op, _) = node.find_vout(&wallet_fee_tx, &wallet_fee_spk);
+    let change_addr = node.cli(&["getnewaddress"]);
+    let change_spk = node.cli_json(&["getaddressinfo", &change_addr])["scriptPubKey"].as_str().unwrap().to_string();
+    let resume_req = serde_json::json!({
+        "path": "resume",
+        "coin": {"tx": node.cli(&["getrawtransaction", &halt_txid]), "vout": 1},
+        "verifier": hex(cv8_spk.as_bytes()),
+        "entropy": entropy_v,
+        "fee": {"coins": [{"tx": node.cli(&["getrawtransaction", &wallet_fee_tx]), "vout": wfee_op.vout}],
+                "atoms": "20000", "change_to": change_spk},
+    });
+    let built = token_cmd(&["build", "--instance", &token_inst, "--key-file", &issuer_key_path], Some(&resume_req));
+    let signed = node.cli_json(&["signrawtransactionwithwallet", built["hex"].as_str().unwrap()]);
+    assert_eq!(signed["complete"].as_bool(), Some(true), "{signed}");
+    let txid = node.cli(&["sendrawtransaction", signed["hex"].as_str().unwrap()]);
+    node.generate(1, &mine_addr);
+    let (resumed_op, resumed_v) = node.find_vout(&txid, &cv8_spk);
+    assert_eq!(resumed_v, q, "the resume mints exactly q of V");
+    assert_eq!(resumed_op.vout, 1);
+    println!("PROOF 6d: resume - q of V reissued by the token covenant into the recorded C_V(pi8): {txid}");
+
+    // ================= 6e. transfers settle again, under the halted policy
+    let (o, v) = node.find_vout(&halt_txid, &fee_spk);
+    fee = Utxo { outpoint: o, value: v };
+    let again = make_req(alice, &alice_a, bob, alice_a.value / 2, resumed_op, &fee);
+    let (tx, _) = complete_transfer(&ctx8, &again, &alice_sk, &fee_sk, true)
+        .expect("the resumed verifier satisfies the transfer");
+    let txid = node.cli(&["sendrawtransaction", &tx_hex(&tx)]);
+    node.generate(1, &mine_addr);
+    println!("PROOF 6e: alice -> bob under pi8 after the resume: {txid}");
 
     println!("ALL REGTEST PROOFS COMPLETE");
     let _ = (alice_a.value, bob_a.value, cu_carol.script_pubkey);

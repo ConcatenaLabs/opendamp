@@ -26,7 +26,11 @@ cargo test --test regtest -- --ignored --nocapture   # the proof against a node
 ```
 
 The regtest proof spawns `sequentiad`: `$OPENDAMP_NODE_BIN`, or
-`../Sequentia/src/sequentiad`, a node checkout beside this one.
+`../Sequentia/src/sequentiad`, a node checkout beside this one. It also runs
+sequentia-contracts' `token-covenants` tool for the verifier asset's token:
+`$OPENDAMP_TOKEN_COVENANTS`, or
+`../sequentia-contracts/tools/token-covenants/target/release/token-covenants`
+beside this checkout.
 
 ## The tool
 
@@ -47,7 +51,7 @@ explicit coin data is enough, and what a command prints is broadcast with
 | `transfer-finalize --snapshot S --request R` | the same transfer built, signed with `sender_privkey` and `fee.privkey` from the request, and every covenant run locally before it is printed |
 | `transfer-cosign --snapshot S --transaction T --sender-privkey HEX [--recipient X]... [--out FILE]` | sign the OpenDAMP inputs of a transaction somebody else laid out (below) |
 | `issuer-update --snapshot S --next-snapshot S' --request R --issuer-privkey HEX` | move the verifier from policy `S` to policy `S'` |
-| `halt --snapshot S --to-spk HEX --request R --issuer-privkey HEX` | send the verifier asset out of the covenant, which stops every transfer of the asset; a halt must burn it (an `OP_RETURN` script), for the reason in the issuer section of `src/txbuild.rs` |
+| `halt --snapshot S --to-spk HEX --request R --issuer-privkey HEX` | send the verifier asset out of the covenant, which stops every transfer of the asset; a halt must burn it (an `OP_RETURN` script), for the reason in the issuer section of `src/txbuild.rs`, and records the burned verifier in V's token covenant (below) |
 
 A **request file** (`examples/transfer-request.json`) names the sender's key
 and coins, the recipient and amount, the verifier's outpoint, and the fee coin
@@ -56,6 +60,53 @@ one -- with its key and where its change goes. `locktime` is the height the
 transfer claims, which is how a lockup or a receive window is satisfied.
 `examples/issuer-request.json` is the issuer's, which needs only the verifier
 outpoint and a fee coin.
+
+### Halting and resuming
+
+V's reissuance token is held by the `sequentia/verifier-token` covenant of the
+[`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts)
+repository (its `docs/verifier-token.md`), from the issuance on. It reissues
+exactly `q` of V, signed by the issuer key, only into the verifier covenant it
+last recorded. That repository's `token-covenants` tool builds its spends; the
+issuer keeps the token covenant's instance file (`token-covenants
+verifier-token instance`) beside the snapshots.
+
+**Halt.** The request carries a `verifier_token` block naming the token
+covenant's coin:
+
+```json
+"verifier_token": {
+  "txid": "...", "vout": 1, "asset": "<V's reissuance token>", "value": 100000000,
+  "script_pubkey": "<the coin's scriptPubKey>",
+  "recorded": "<scriptPubKey of the verifier the coin records now>",
+  "successor_spk": "<token-covenants verifier-token address --instance I --verifier <C_V(pi) scriptPubKey>>"
+}
+```
+
+`opendamp halt --to-spk 6a ...` then burns V from `C_V(pi)` at input 0 and
+spends the token covenant at input 1, its successor at output 1 recording
+`C_V(pi)`, and prints `{tx, prevouts, verifier}` with input 0 and the fee
+input signed. The issuer key's record signature goes in with
+
+```sh
+token-covenants verifier-token record --instance I --key-file ISSUER_KEY < halt.json
+```
+
+which checks input 0 holds exactly `q` of V and output 1 records its script,
+and prints the finished transaction to broadcast. A halt without the block is
+refused unless `--unrecorded yes` is given, for an asset whose V token is in no
+covenant: a halt that does not record leaves the covenant recording an older
+verifier, and a resume would restore that older policy. `issuer-update` takes
+the same block, to record the verifier an update leaves.
+
+**Resume.** `token-covenants verifier-token build --instance I --key-file
+ISSUER_KEY` with a `resume` request reissues `q` of V into the recorded
+verifier and returns the transaction with its fee coins for the wallet to sign
+(that tool's `README.md` gives the request). The asset resumes under the policy
+it was halted at; an update moves it on. Resume only a halted asset, unless a
+second verifier under the same policy is meant: a live verifier at the
+recorded script would otherwise gain a parallel twin, and a halt has to burn
+every one.
 
 ### Signing a transaction you did not build
 
