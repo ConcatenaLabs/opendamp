@@ -3,26 +3,27 @@
   "asset": "daa8284c0d06cb02ef28b75ffa74c3b512131884d9c72e4f11dac634703d4fc4",
   "verifier_asset": "56b97cd9fc25cebe5636bbc07e8502e9262a6290c95fbdde58c7451e1d7c2d98",
   "q": 100000,
-  "tree": "dmt-v1",
+  "pi": "96a3ab67f98232095796ec62543cbaaffa26b6df2d32ff0bde3708744c3d30ad",
   "seq": 1,
-  "prev_pi": null,
-  "issuer_update_key": "56b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967",
+  "prev_pi": "02052c7954275a39506c1e54371dcb85421174bfb879621120015e16662fd2f7",
+  "tree": "dmt-v1",
   "predicates": {
+    "blacklist": {
+      "root": "25e74bdf16e25709031f41b2d2a51ff865800b53e3787fca9cfb75edc07e11cb",
+      "entries": [
+        "2f0a781be235d95128c10c39d23ceffc6b683ecafd784b2510b2897a3b4dd799"
+      ]
+    },
     "whitelist": {
+      "root": "87d5ef00a3645823ac773b4b874810d667eb695aaa2c2f00b922111f265c8709",
       "entries": [
         "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
         "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"
       ]
     },
-    "blacklist": {
-      "entries": [
-        {
-          "txid": "9999999999999999999999999999999999999999999999999999999999999999",
-          "vout": 0
-        }
-      ]
-    },
-    "limit": null
+    "limit": null,
+    "windows": []
   },
+  "issuer_update_key": "56b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967",
   "network": "testnet"
 }

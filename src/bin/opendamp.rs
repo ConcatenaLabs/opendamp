@@ -52,7 +52,8 @@ struct Args {
 
 fn usage() -> String {
     "usage: opendamp <derive|registry|vectors|transfer-build|transfer-finalize|\
-     transfer-cosign|issuer-update|halt> --snapshot FILE [...]"
+     transfer-cosign|issuer-update|halt> --snapshot FILE [...] | \
+     opendamp outpoint-key --txid TXID --vout N"
         .to_string()
 }
 
@@ -91,19 +92,37 @@ impl Args {
 
 // ------------------------------------------------------------------- snapshot
 
-/// The subset of the design doc's `snapshot/v1` this tool consumes, plus the
-/// chain selector it needs to derive addresses and sighashes.
+/// A policy snapshot in the published `snapshot/v1` form (DESIGN.md section 4),
+/// exactly as `openampd` publishes it and hands it out as `derive_snapshot`,
+/// plus the three things a derivation needs that the snapshot does not carry:
+/// the issuer's update key (a compile-time parameter of G), the network and,
+/// on a regtest chain, its genesis hash.
+///
+/// The declared `pi` and list roots are commitments the issuer signs, so they
+/// are not taken on trust and not ignored either: this tool recomputes both
+/// roots and pi from the entries and refuses a snapshot whose declarations
+/// disagree with what its entries hash to. A hand-written snapshot may leave
+/// them out.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Snapshot {
-    #[serde(default, rename = "v")]
-    _v: Option<u32>,
+    #[serde(default)]
+    v: Option<u32>,
     /// Accepted so a published snapshot round-trips, but not used: this build
     /// derives nothing from the previous policy version. Named rather than
     /// swallowed, because `deny_unknown_fields` would otherwise reject a
     /// perfectly well-formed snapshot.
     #[serde(default, rename = "prev_pi")]
     _prev_pi: Option<serde_json::Value>,
+    /// The declared policy commitment, checked against the recomputed one.
+    #[serde(default)]
+    pi: Option<String>,
+    /// The issuer's signature over the canonical snapshot. Accepted so the
+    /// published document is read as it is; this tool derives and signs
+    /// transactions and does not authenticate publications, which wallets and
+    /// openampd check against the issuer update key.
+    #[serde(default, rename = "issuer_sig")]
+    _issuer_sig: Option<String>,
     asset: String,
     verifier_asset: String,
     q: u64,
@@ -141,12 +160,24 @@ struct Predicates {
     /// Enforced by P(pi); `null` means no limit.
     #[serde(default)]
     limit: Option<u64>,
+    /// The design document's class-keyed height windows. No program reads
+    /// them (height bounds live in the whitelist entries), so an empty or null
+    /// list is accepted and any rule in it is refused.
+    #[serde(default)]
+    windows: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Whitelist {
+    /// The declared dmt-v1 root, checked against the entries.
+    #[serde(default)]
+    root: Option<String>,
     entries: Vec<WhitelistEntry>,
+    /// A list published by reference only. Refused: the root must be
+    /// recomputable from inline entries.
+    #[serde(default)]
+    url: Option<String>,
 }
 
 /// A whitelist entry: a bare key string for an unrestricted holder, or an object
@@ -187,31 +218,58 @@ impl WhitelistEntry {
     }
 }
 
-/// Blacklisted outpoints. `entries` are outpoints in the form the operator sees
-/// them (display-order txid plus vout); `keys` accepts pre-hashed policy keys for
-/// a registrar that would rather not republish raw outpoints.
+/// Blacklisted outpoints. Each entry is an outpoint's policy key,
+/// `SHA256(txid || BE32(vout))` with the txid in internal byte order, as hex:
+/// the form the covenant commits to and openampd publishes.
+/// `opendamp outpoint-key --txid T --vout N` prints the key of an outpoint.
 #[derive(serde::Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct Blacklist {
+    /// The declared dmt-v1 interval root, checked against the entries.
     #[serde(default)]
-    entries: Vec<OutPointRef>,
+    root: Option<String>,
     #[serde(default)]
-    keys: Vec<String>,
+    entries: Vec<serde_json::Value>,
+    /// A list published by reference only. Refused, as for the whitelist.
+    #[serde(default)]
+    url: Option<String>,
 }
 
 impl Blacklist {
     fn policy_keys(&self) -> Result<Vec<[u8; 32]>, String> {
         let mut out = Vec::new();
-        for e in &self.entries {
-            let op = outpoint(&e.txid, e.vout)?;
-            out.push(opendamp::txbuild::outpoint_policy_key(&op));
-        }
-        for k in &self.keys {
-            out.push(unhex32(k)?);
+        for (i, e) in self.entries.iter().enumerate() {
+            let shape = "an entry is an outpoint's policy key, 32-byte hex";
+            let key = match e {
+                serde_json::Value::String(k) => {
+                    unhex32(k).map_err(|err| format!("predicates.blacklist.entries[{i}]: {shape}: {err}"))?
+                }
+                serde_json::Value::Object(o) if o.contains_key("txid") => {
+                    return Err(format!(
+                        "predicates.blacklist.entries[{i}]: {shape}, not an outpoint; \
+                         `opendamp outpoint-key --txid {} --vout {}` prints it",
+                        o["txid"].as_str().unwrap_or("TXID"),
+                        o.get("vout").map(|v| v.to_string()).unwrap_or_else(|| "N".into())
+                    ))
+                }
+                other => return Err(format!("predicates.blacklist.entries[{i}]: {shape}, got {other}")),
+            };
+            out.push(key);
         }
         out.sort_unstable();
         out.dedup();
         Ok(out)
+    }
+}
+
+/// A declared commitment must equal the recomputed one.
+fn check_declared(what: &str, declared: &Option<String>, computed: &[u8; 32]) -> Result<(), String> {
+    match declared {
+        Some(d) if !d.trim().eq_ignore_ascii_case(&hex(computed)) => Err(format!(
+            "the snapshot declares {what} {d}, but its entries give {}: it is not the policy it claims to be",
+            hex(computed)
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -226,6 +284,22 @@ fn asset(s: &str) -> Result<AssetId, String> {
 fn load_snapshot(path: &str) -> Result<(Snapshot, Ctx), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let snap: Snapshot = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    if let Some(v) = snap.v {
+        if v != 1 {
+            return Err(format!("{path}: snapshot version {v}; this build reads snapshot/v1"));
+        }
+    }
+    let p = &snap.predicates;
+    if p.whitelist.url.is_some() || p.blacklist.as_ref().is_some_and(|b| b.url.is_some()) {
+        return Err(format!(
+            "{path}: a list published by url is not read; a snapshot carries its entries inline, so its roots can be recomputed"
+        ));
+    }
+    if p.windows.as_ref().is_some_and(|w| !w.is_empty()) {
+        return Err(format!(
+            "{path}: predicates.windows states rules no program enforces; height bounds go in the whitelist entries (send_after, recv_after)"
+        ));
+    }
     if snap.tree != "dmt-v1" {
         return Err(format!(
             "unsupported tree {:?}; this build implements dmt-v1 only",
@@ -258,6 +332,11 @@ fn load_snapshot(path: &str) -> Result<(Snapshot, Ctx), String> {
         );
     }
     let ctx = Ctx::with_policy(net, params, issuer, wl, &bl, limit, snap.seq)?;
+    check_declared("a whitelist root", &snap.predicates.whitelist.root, &ctx.wl_tree.root())?;
+    if let Some(b) = &snap.predicates.blacklist {
+        check_declared("a blacklist root", &b.root, &ctx.bl_tree.root())?;
+    }
+    check_declared("pi", &snap.pi, &ctx.pi)?;
     Ok((snap, ctx))
 }
 
@@ -418,6 +497,7 @@ fn run() -> Result<(), String> {
         "transfer-cosign" => cmd_transfer_cosign(&args),
         "issuer-update" => cmd_issuer(&args, false),
         "halt" => cmd_issuer(&args, true),
+        "outpoint-key" => cmd_outpoint_key(&args),
         other => Err(format!("unknown command {other}\n{}", usage())),
     }
 }
@@ -434,6 +514,17 @@ fn owner_list<'a>(args: &'a Args, snap: &'a Snapshot) -> Vec<&'a str> {
     } else {
         owners
     }
+}
+
+/// The policy key of an outpoint, the form a snapshot's blacklist lists it in.
+fn cmd_outpoint_key(args: &Args) -> Result<(), String> {
+    let vout: u32 = args
+        .one("vout")?
+        .parse()
+        .map_err(|e| format!("--vout: {e}"))?;
+    let op = outpoint(args.one("txid")?, vout)?;
+    println!("{}", hex(&opendamp::txbuild::outpoint_policy_key(&op)));
+    Ok(())
 }
 
 fn cmd_derive(args: &Args) -> Result<(), String> {

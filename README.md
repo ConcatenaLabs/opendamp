@@ -34,13 +34,28 @@ beside this checkout.
 
 ## The tool
 
-Every command takes `--snapshot FILE`, the policy snapshot: the asset, its
-verifier asset and amount `q`, the issuer's update key, the whitelist (bare
-keys, or keys with `send_after` and `recv_after` heights), the blacklist of
-outpoints, the transfer `limit`, the policy sequence number, and the network.
-`examples/snapshot-seq0.json` is one. Nothing needs a node: the snapshot plus
-explicit coin data is enough, and what a command prints is broadcast with
-`sendrawtransaction`.
+Every command takes `--snapshot FILE`, the policy snapshot in its published
+`snapshot/v1` form ([`DESIGN.md`](DESIGN.md) section 4), the document `openampd`
+publishes and hands an issuer as `derive_snapshot`: the asset, its verifier
+asset and amount `q`, `pi`, the policy sequence number and `prev_pi`, the
+whitelist (bare keys, or keys with `send_after` and `recv_after` heights) and
+the blacklist, each with its `root`, the transfer `limit`, `windows` (empty: no
+program reads class windows; height bounds live in the whitelist entries) and,
+once published, `issuer_sig`. A blacklist entry is an outpoint's policy key,
+`SHA256(txid || BE32(vout))` with the txid in internal byte order, in hex;
+`opendamp outpoint-key --txid T --vout N` prints it. Beside the snapshot the
+document carries what a derivation needs and the snapshot does not: the
+issuer's `issuer_update_key`, the `network` (`testnet` or `regtest`), and on
+regtest the chain's `genesis` hash. `openampd`'s `derive_snapshot` and
+`derive_current` carry all three; `examples/snapshot-seq0.json` is a document
+in this form.
+
+The tool recomputes both roots and `pi` from the entries and refuses a
+document whose declared `pi` or roots disagree with them, a list published by
+`url` rather than inline, a non-empty `windows`, and any field it does not
+know, so a document can never state a rule the programs do not enforce.
+Nothing needs a node: the snapshot plus explicit coin data is enough, and what
+a command prints is broadcast with `sendrawtransaction`.
 
 | command | what it does |
 |---|---|
@@ -51,6 +66,7 @@ explicit coin data is enough, and what a command prints is broadcast with
 | `transfer-finalize --snapshot S --request R` | the same transfer built, signed with `sender_privkey` and `fee.privkey` from the request, and every covenant run locally before it is printed |
 | `transfer-cosign --snapshot S --transaction T --sender-privkey HEX [--recipient X]... [--out FILE]` | sign the OpenDAMP inputs of a transaction somebody else laid out (below) |
 | `issuer-update --snapshot S --next-snapshot S' --request R --issuer-privkey HEX` | move the verifier from policy `S` to policy `S'` |
+| `outpoint-key --txid T --vout N` | the policy key of an outpoint, as a snapshot's blacklist lists it |
 | `halt --snapshot S --to-spk HEX --request R --issuer-privkey HEX` | send the verifier asset out of the covenant, which stops every transfer of the asset; a halt must burn it (an `OP_RETURN` script), for the reason in the issuer section of `src/txbuild.rs`, and records the burned verifier in V's token covenant (below) |
 
 A **request file** (`examples/transfer-request.json`) names the sender's key
@@ -143,7 +159,8 @@ src/dmt.rs       the dmt-v1 tree behind the whitelist and blacklist proofs
 src/tapscript.rs the taproot construction of C_U and C_V
 src/bin/         the opendamp tool
 tests/           builder refusals, covenant behaviour, pruning, the cosigner,
-                 and the regtest proof
+                 the snapshot format (with openampd's own documents in
+                 tests/data/), and the regtest proof
 vectors/         the published CMR pinning file
 gomirror/        a Go mirror of the dmt-v1 tree, for the policy server
 SPEC-dmt-v1.md   the tree's specification

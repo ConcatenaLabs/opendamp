@@ -387,6 +387,12 @@ Two distinct techniques, because they prove different things:
 `tests/covenant.rs` proves the same logic on the BitMachine against the exact
 `ElementsEnv` consensus uses, with no node. `tests/builder.rs` covers the
 refusals the builder owns, and `tests/cost_profile.rs` the budget arithmetic.
+`tests/snapshot_format.rs` runs the tool on the published snapshot form,
+including two documents `openampd` produced for a real issuance and a real
+policy update (`tests/data/`), and on every way a document can claim a policy
+its entries do not give; `openamp`'s `e2e/damp_two_phase.py` runs the two-phase
+issuance and policy update against a node with each document passed through
+unchanged.
 
 ## 5. Design decisions worth recording
 
