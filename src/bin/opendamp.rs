@@ -32,8 +32,8 @@ use opendamp::tapscript::{
 };
 use opendamp::elements::{confidential, Transaction, TxOut};
 use opendamp::txbuild::{
-    build_transfer, complete_issuer_op, complete_transfer, cosign_transfer, covenant_env,
-    regulated_flows, sig_all_digest, Ctx, Flow, IssuerReq, TransferReq,
+    build_transfer, complete_issuer_op, complete_issuer_op_recording, complete_transfer, cosign_transfer,
+    covenant_env, regulated_flows, sig_all_digest, Ctx, Flow, IssuerReq, TokenRecord, TransferReq,
 };
 
 fn main() {
@@ -316,6 +316,27 @@ struct RequestFile {
     locktime: u32,
     verifier_outpoint: OutPointRef,
     fee: FeeRef,
+    /// An issuer request only: the verifier asset's token covenant, spent
+    /// beside the operation so that it records the verifier at input 0.
+    #[serde(default)]
+    verifier_token: Option<TokenRef>,
+}
+
+/// The token covenant's coin (`sequentia/verifier-token`).
+#[derive(serde::Deserialize)]
+struct TokenRef {
+    txid: String,
+    vout: u32,
+    /// V's reissuance token, display hex.
+    asset: String,
+    value: u64,
+    /// The coin's scriptPubKey.
+    script_pubkey: String,
+    /// The scriptPubKey of the verifier the coin records now.
+    recorded: String,
+    /// The covenant recording this operation's verifier, from
+    /// `token-covenants verifier-token address --verifier <C_V scriptPubKey>`.
+    successor_spk: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -895,7 +916,6 @@ fn cmd_issuer(args: &Args, halt: bool) -> Result<(), String> {
         fee_amount: req_file.fee.amount,
         fee_change_spk: Script::from(unhex(&req_file.fee.change_spk)?),
     };
-    let tx = complete_issuer_op(&ctx, next.as_ref(), &req, &issuer_sk, &fee_sk)?;
     match &next {
         Some(n) => eprintln!(
             "verifier moves to {}",
@@ -903,6 +923,36 @@ fn cmd_issuer(args: &Args, halt: bool) -> Result<(), String> {
         ),
         None => eprintln!("verifier asset leaves the covenant (halt)"),
     }
-    println!("{}", hex(&tx.serialize()));
+    let Some(t) = &req_file.verifier_token else {
+        // A halt that does not record leaves the token covenant recording an
+        // older verifier, and a resume would restore that older policy.
+        if halt && args.opt("unrecorded") != Some("yes") {
+            return Err("this halt does not record the verifier it burns: add verifier_token to the request, \
+                        so that a resume restores this policy, or pass --unrecorded yes for an asset whose \
+                        verifier-asset token is in no covenant"
+                .into());
+        }
+        let tx = complete_issuer_op(&ctx, next.as_ref(), &req, &issuer_sk, &fee_sk)?;
+        println!("{}", hex(&tx.serialize()));
+        return Ok(());
+    };
+    let token = TokenRecord {
+        outpoint: outpoint(&t.txid, t.vout)?,
+        token: asset(&t.asset)?,
+        value: t.value,
+        script_pubkey: Script::from(unhex(&t.script_pubkey)?),
+        successor_spk: Script::from(unhex(&t.successor_spk)?),
+    };
+    let (tx, prevouts) = complete_issuer_op_recording(&ctx, next.as_ref(), &req, &token, &issuer_sk, &fee_sk)?;
+    eprintln!(
+        "the token covenant at input 1 still needs the issuer key's record signature: \
+         token-covenants verifier-token record --instance <the token instance> --key-file <the issuer key> < this output"
+    );
+    let doc = serde_json::json!({
+        "tx": hex(&tx.serialize()),
+        "prevouts": prevouts.iter().map(prevout_doc).collect::<Vec<_>>(),
+        "verifier": t.recorded,
+    });
+    println!("{doc}");
     Ok(())
 }

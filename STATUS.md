@@ -199,9 +199,16 @@ What closes it is operational, and the tooling now enforces both halves:
   and A is frozen — which is what a halt is supposed to mean.
   `halt_leaves_live_verifier_asset()` names the alternative for a caller that
   insists on parking it somewhere spendable.
-- **V's reissuance authority is as sensitive as I.** Minting q of V to an
-  ordinary address is a complete bypass. Retaining it to run parallel verifier
-  outputs means retaining a second key of the same criticality.
+- **V's reissuance token is in a covenant.** Minting q of V to an ordinary
+  address is a complete bypass, so the token never sits in a wallet: from the
+  issuance on it is held by `sequentia/verifier-token` (in the
+  [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts)
+  repository, `docs/verifier-token.md`), which reissues exactly q of V, signed
+  by I, only into the verifier covenant it last recorded, and records only the
+  script of a coin holding exactly q of V. A halt records the verifier it burns,
+  so the resume restores the halted policy. Proofs 1b, 6a, 6d and 6e in
+  `tests/regtest.rs`; the covenant's refusals, each forced into a block, are in
+  that repository's harness test `v1`.
 
 ### Deliberately outside the covenant
 

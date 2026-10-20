@@ -23,7 +23,7 @@ repository. It mirrors parts of this crate in Go and pins a copy of
 ```sh
 cargo build --release
 cargo test
-cargo test --test regtest -- --ignored --nocapture   # needs a node, see README
+cargo test --test regtest -- --ignored --nocapture   # needs a node and the token-covenants tool, see README
 ```
 
 There is no CI. `cargo test` and the regtest proof before every PR that touches
@@ -42,9 +42,12 @@ a program or the transaction builder are the whole gate.
   (`SIMPLICITY_BUDGET_PER_WITNESS_BYTE` in the node's `src/script/script.h`). On
   a node without it they are unspendable by design.
 - **`q` units of the verifier asset must never exist outside a verifier
-  covenant.** No covenant can check this (`STATUS.md` explains why); a halt
-  burns the verifier to `OP_RETURN`, and the verifier asset's reissuance
-  authority is as sensitive as the issuer key.
+  covenant.** No covenant of the asset can check this (`STATUS.md` explains
+  why); a halt burns the verifier to `OP_RETURN` and records it in the
+  verifier asset's token covenant (`sequentia/verifier-token`, in
+  sequentia-contracts), the only place that token may live, which mints the
+  verifier amount back only into a recorded verifier. Never move that token
+  into a wallet.
 - **dmt-v1 guards hash under domain `0x03`**, never as key leaves; `recv_after`
   never binds the sender's own change; `pi` is a compile-time parameter that
   reaches the program. Each of these was once wrong; `STATUS.md` section 0 has
