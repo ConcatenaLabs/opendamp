@@ -118,11 +118,14 @@ key provides no key-path spend. On the primary path, P(pi) checks:
 
 1. Its input is transaction input zero and carries q units of V.
 2. Output zero returns q units of V to the same C_V(pi).
-3. At least one input is a C_U(X) input (which independently requires its
-   owner's signature, so only holders can advance the verifier output).
+3. At least one input carries A: a C_U(X) input (which independently
+   requires its owner's signature) or a listed contract the sender owns
+   (which its own rules let move), so only a holder's coin advances the
+   verifier output.
 4. Every output exposes an explicit asset identifier, EXCEPT outputs for
    which `output_is_fee` holds (see 2.3). Every output carrying A pays
-   C_U(Y) for its witness-supplied recipient key Y, computed with the
+   C_U(Y) for its witness-supplied recipient key Y, or a contract of a
+   template the policy lists owned by Y (section 2.5), computed with the
    taproot-construction jets.
 5. All enabled policy predicates hold (section 3).
 
@@ -201,7 +204,84 @@ OpenDAMP assets. Holders pay fees in an ordinary asset directly, or through
 the fee-conversion pattern with any registered fee broker; the conversion
 output to the broker is an ordinary C_U output of A and passes confinement.
 
-### 2.4 Confidentiality position
+### 2.4 Contract templates
+
+A policy may list **contract templates** the asset can enter: an order, and in
+principle a vault, a sale or an escrow. Consensus runs only the scripts of the
+coins a transaction spends, so a contract can hold A only if it brings the
+verifier with it. A template is therefore listable only if:
+
+- **Every spending path refuses a transaction whose input 0 does not hold
+  exactly q of V.** This guard is U's check 3, applied by the contract. Under
+  the invariant of 2.1 it puts the verifier into every transaction that moves
+  the contract's coin, so the A that leaves the contract is scanned like any
+  other. SeqDEX's plain order has no guard: a fill there constrains the payment
+  and the remainder, and leaves the taker's output unconstrained, so A could
+  leave a plain order in a transaction with no verifier.
+- **It names one owner key among its terms.**
+
+The listable template is `seqdex/guarded-order` (sequentia-contracts,
+`docs/seqdex-guarded-order.md`):
+
+    P2TR(NUMS, TapBranch(TapLeaf_0xbe(ORDER_CMR), H_TapData(terms)))
+
+Its ten terms are ASSET_A, ASSET_B, RATE_NUM, RATE_DEN, MIN_LOT, MAKER,
+EXPIRY, REFUND_KEY, GUARD_ASSET and GUARD_AMOUNT. One program serves every
+order, so ORDER_CMR is a constant.
+
+**Recognition.** Every verifier leaf of a listing policy carries a recogniser
+per listed template. A recogniser rebuilds the instance's script from the
+template's root and the terms, and compares it with the script of the input or
+output: one hash per leaf, one tweak, and no compiler at spend time. The
+policy fixes four terms, which the witness cannot supply:
+
+- ASSET_A = A;
+- GUARD_ASSET = V and GUARD_AMOUNT = q. An order guarded by another coin
+  could be emptied by whoever holds that coin.
+- REFUND_KEY = the order's **owner**.
+
+The maker's commercial terms come from the witness.
+
+**A contract coin is its owner's coin.**
+
+- An A output to a recognised order owned by the sender is change. One owned
+  by another key Y is a payment to Y: Y's membership proof and receive window
+  apply, and its explicit value counts against the limit.
+- An A input from a recognised order must be owned by the sender, who is
+  proven once with their lockup. So filling an order is a transfer by its
+  owner, and it needs no signature from them: their consent is the terms they
+  put the coin under.
+- The single-sender rule, the whitelist freeze, lockups, the limit and the
+  outpoint blacklist therefore reach a coin in a contract exactly as they
+  reach a C_U.
+- Inside the contract its own rules apply: the order checks price, lot,
+  remainder and expiry. The verifier checks who owns and who receives.
+
+**Leaving.** Every A output of a transaction that spends a contract coin is
+scanned as in 2.2. It pays the sender's C_U, a whitelisted C_U(Y), or a
+recognised contract with a whitelisted owner, and never a fee output. A
+contract is not a way around the policy: who ends up holding A is still the
+whitelist's decision.
+
+**A fill**, with the order at input k ≥ 1 (the guard holds input 0):
+
+- inputs: the verifier, the order, the taker's payment coin and a fee coin;
+- outputs: the verifier's recreation (0), the taker's A, the payment to the
+  maker (2k), the remainder at the same order (2k+1), change and the fee.
+
+The verifier proves the maker as the sender, the order input, the taker as a
+whitelisted recipient and the remainder as the maker's own contract. The order
+proves the trade.
+
+**What listing commits.** The list is committed into pi through the fourth
+slot of `rules_root` (3.1). A policy that lists nothing renders its verifier
+exactly as before, so its pi and its address are unchanged.
+
+**Removing a template from the list freezes the A held in contracts of that
+template, until it is listed again**, just as removing a holder freezes that
+holder. A halt freezes every contract coin, because the guard finds no V.
+
+### 2.5 Confidentiality position
 
 Asset identifiers must be explicit on every output the scan reaches; there
 is no unblind jet, so the covenant can only police what it can read. Value
@@ -219,7 +299,13 @@ elect `cosign` instead; this is the point of offering both.
 
 `seq` increments on every policy update. `rules_root` is a Merkle root over
 the enabled predicate commitments in fixed order (absent predicates commit
-to the empty hash).
+to the empty hash):
+
+    rules_root = SHA256(SHA256(c_bl || c_wl) || SHA256(c_lim || c_con))
+
+`c_con` commits to the contract template list (2.4):
+`H_"OpenDAMP/contracts/v1"(hash_1 || ... || hash_n)` over the sorted template
+hashes, or the empty hash for a policy that lists none.
 
 pi is a compile-time parameter of the verifier program and enters its DAG, so
 C_V(pi) commits to exactly one policy **version**. This is worth stating
@@ -313,7 +399,8 @@ publication as a first-class obligation:
         "blacklist": { "root": <hex>, "entries": [...] | "url": ... },
         "whitelist": { "root": <hex>, "entries": [...] | "url": ... },
         "limit": <u64 or null>,
-        "windows": [...]
+        "windows": [...],
+        "contracts": [<template hash>, ...]
       },
       "issuer_sig": <BIP340 over H_"OpenDAMP/snapshot/v1"(canonical-json-without-sig)>
     }
@@ -362,7 +449,8 @@ verifier output on chain being the binding fact a holder verifies against.
 ## 6. Issuer operations
 
 - **Update**: spend C_V(pi) through G(I), create C_V(pi') with q of V, and
-  publish snapshot seq+1 before or at broadcast. Wallets treat a verifier
+  publish snapshot seq+1 before or at broadcast. An update is also how a
+  contract template is listed or removed from the list (2.4). Wallets treat a verifier
   output whose pi has no published snapshot as unspendable-by-them and alert.
 - **Halt**: BURN V through G(I), to a bare `OP_RETURN`. This is the pause
   analog. It must be a burn and not an ordinary address, because of the
@@ -413,7 +501,10 @@ Inherited from the DAMP paper with Sequentia specifics:
 - **Custody**: the issuer alone cannot spend a holder's balance on any path;
   every user input requires its owner's signature. Compromise of I permits
   policy revocation or denial of service, not theft. I should be a FROST
-  group key.
+  group key. A holder's coin in an order is spendable by the order's own
+  rules: with G(I) at input 0 the guard is met and P does not run, so I alone
+  can fill an order on its terms (the maker is paid its price) and send the A
+  anywhere. That is the same power, in kind, as minting A outside confinement.
 - **Contention**: a single verifier output is a spending race; see parallel
   outputs above. An optional coordinator can order transactions without
   becoming an authorization service, at the cost of potential MEV.

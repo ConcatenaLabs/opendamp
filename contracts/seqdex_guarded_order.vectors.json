@@ -1,0 +1,146 @@
+{
+  "addresses": [
+    {
+      "address": {
+        "elementsregtest": "ert1pf3twhrucgl3le3l2kd8wpjdyvzgec8pyjpz4889e8e983jqlmh4q7zgwmv",
+        "sequentia-testnet": "tb1pf3twhrucgl3le3l2kd8wpjdyvzgec8pyjpz4889e8e983jqlmh4qzg2k8j"
+      },
+      "leaves": {
+        "order": {
+          "control_block": "bf50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0ea1fc47ae6e9dbbda28102a4562af3979823a3d63e54747ece67adc3232d8650",
+          "hash": "e4b13df238188c00e5c2ddf41b9962a3082212b1e15090e75b8d453471454aaa"
+        },
+        "terms": {
+          "data": "a905d254817d3a6c74704312d913439bda8fde4b1785c899728810eea15c0f5994127dc47e3f7e2ab96bee868a8113049c2252d7514893bf7dc4b9835ebc14040000000000000003000000000000000200000000000027100728bd310b992f0cf0337ce6b7ff50e5b4b555f732d540639e647c982be5d174000004b0d97d2e94eaa971bd275cb5dedd22bb4151e217e7391b611faa8697fe378db15e96396e4b780cd2c548893cc05ee35ebf5695f2c059279b72e2d7d3bef7b1af6000000000000003e8",
+          "hash": "ea1fc47ae6e9dbbda28102a4562af3979823a3d63e54747ece67adc3232d8650"
+        }
+      },
+      "merkle_root": "ca4f0cdbab8807a9ccaae13300823ed6a94b9e802cd38eae90a660d36d0d6641",
+      "name": "order 1: 3 B for 2 A, a height expiry, guarded by 1,000 atoms; program leaf first, output key parity 1",
+      "output_key": "4c56eb8f9847e3fcc7eab34ee0c9a460919c1c249045539cb93e4a78c81fddea",
+      "output_key_parity": 1,
+      "params": {
+        "ASSET_A": "a905d254817d3a6c74704312d913439bda8fde4b1785c899728810eea15c0f59",
+        "ASSET_B": "94127dc47e3f7e2ab96bee868a8113049c2252d7514893bf7dc4b9835ebc1404",
+        "EXPIRY": "000004b0",
+        "GUARD_AMOUNT": "00000000000003e8",
+        "GUARD_ASSET": "96396e4b780cd2c548893cc05ee35ebf5695f2c059279b72e2d7d3bef7b1af60",
+        "MAKER": "0728bd310b992f0cf0337ce6b7ff50e5b4b555f732d540639e647c982be5d174",
+        "MIN_LOT": "0000000000002710",
+        "RATE_DEN": "0000000000000002",
+        "RATE_NUM": "0000000000000003",
+        "REFUND_KEY": "d97d2e94eaa971bd275cb5dedd22bb4151e217e7391b611faa8697fe378db15e"
+      },
+      "script_pubkey": "51204c56eb8f9847e3fcc7eab34ee0c9a460919c1c249045539cb93e4a78c81fddea",
+      "slots": {},
+      "tweak": "147f0fc299e0f3344b033497a31f65fde26d63bc85ace00bd9f38370e88ab635"
+    },
+    {
+      "address": {
+        "elementsregtest": "ert1pzu3wdnlfadtdfmn45ftj70l5yx3aqm62ax3mjggf74426vrw372svldklz",
+        "sequentia-testnet": "tb1pzu3wdnlfadtdfmn45ftj70l5yx3aqm62ax3mjggf74426vrw372ss40wru"
+      },
+      "leaves": {
+        "order": {
+          "control_block": "be50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0fba2c7e3402d2aac77bb5a81bbcfece84b8ee1f6c9bbdbee87f80edc4350be9e",
+          "hash": "e4b13df238188c00e5c2ddf41b9962a3082212b1e15090e75b8d453471454aaa"
+        },
+        "terms": {
+          "data": "405138f5cb18e9906aa901b79629cd6256b8faf6bbe11ecfeb58f9fc8cad9e0d2b0e8594e6d8f6740b223adcde2290b187233927af743b46ca87ad6a26d6a8d6ffffffffffffffff80000000000000050000010000000000989e691c1f58b7f7f1e69eb083ccf015912977226b7522b4f9e54e059ea084ae713fb300228b9c4f59a8aa932b27135083d51aeda9dda5f3a0d1f3aad163d00386119ab46da313d0653482e560068317d6222a42286b1898f4aa2b32346b8cd92a06670c0000000000000001",
+          "hash": "fba2c7e3402d2aac77bb5a81bbcfece84b8ee1f6c9bbdbee87f80edc4350be9e"
+        }
+      },
+      "merkle_root": "373965862588e5647f4b1017b1ffea322787ec63763935b79f29e176c611dc76",
+      "name": "order 2: a price beyond 2^63 in both terms, a median-time expiry, guarded by 1 atom; program leaf first, output key parity 0",
+      "output_key": "1722e6cfe9eb56d4ee75a2572f3ff421a3d06f4ae9a3b92109f56aad306e8f95",
+      "output_key_parity": 0,
+      "params": {
+        "ASSET_A": "405138f5cb18e9906aa901b79629cd6256b8faf6bbe11ecfeb58f9fc8cad9e0d",
+        "ASSET_B": "2b0e8594e6d8f6740b223adcde2290b187233927af743b46ca87ad6a26d6a8d6",
+        "EXPIRY": "713fb300",
+        "GUARD_AMOUNT": "0000000000000001",
+        "GUARD_ASSET": "6da313d0653482e560068317d6222a42286b1898f4aa2b32346b8cd92a06670c",
+        "MAKER": "989e691c1f58b7f7f1e69eb083ccf015912977226b7522b4f9e54e059ea084ae",
+        "MIN_LOT": "0000010000000000",
+        "RATE_DEN": "8000000000000005",
+        "RATE_NUM": "ffffffffffffffff",
+        "REFUND_KEY": "228b9c4f59a8aa932b27135083d51aeda9dda5f3a0d1f3aad163d00386119ab4"
+      },
+      "script_pubkey": "51201722e6cfe9eb56d4ee75a2572f3ff421a3d06f4ae9a3b92109f56aad306e8f95",
+      "slots": {},
+      "tweak": "0651cc252ec758466bc3f0a1af6894070cf784899d764cfe81ac09ea951618e2"
+    },
+    {
+      "address": {
+        "elementsregtest": "ert1px0apzp2eq5f35e0lam7lq2gu8wnzyxxlwm923evdx7zuk8yav0wqjaea8x",
+        "sequentia-testnet": "tb1px0apzp2eq5f35e0lam7lq2gu8wnzyxxlwm923evdx7zuk8yav0wqwhm9mc"
+      },
+      "leaves": {
+        "order": {
+          "control_block": "be50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0aa23d86b74a580f887cf855990132954f9a14cc8286579d0e0070f1eefc4a03f",
+          "hash": "e4b13df238188c00e5c2ddf41b9962a3082212b1e15090e75b8d453471454aaa"
+        },
+        "terms": {
+          "data": "7ce356917c6d1352f35316226c6b8504b5d341fbc7b6cf4af4bb19193d60465acf23b220793163d16a19439caf85551d9d003db15fe9b9c011e2bd326db4357600000000000000010000000005f5e1000000000000000001ae152e29a8b433379713fc2e14cc01e8933531e322593b4cd4e2cc0308d9ec641dcd65009eed3eda279ca8f6620ecfeb7259b671d0eb54bc9975b30174c24510029a30d3fb4a191a713aa88e433c1be1a1de296463ccd9fc257888cdbc43da90ef9fff840000000005f5e100",
+          "hash": "aa23d86b74a580f887cf855990132954f9a14cc8286579d0e0070f1eefc4a03f"
+        }
+      },
+      "merkle_root": "674b6f164024830b2eb03f6dc38d3944676d0c43befbc3fe54719733654dd46d",
+      "name": "order 3: one atom of B per 10^8 of A, the first median-time expiry, guarded by 10^8 atoms; data leaf first, output key parity 0",
+      "output_key": "33fa11055905131a65ffeefdf0291c3ba62218df76caa8e58d3785cb1c9d63dc",
+      "output_key_parity": 0,
+      "params": {
+        "ASSET_A": "7ce356917c6d1352f35316226c6b8504b5d341fbc7b6cf4af4bb19193d60465a",
+        "ASSET_B": "cf23b220793163d16a19439caf85551d9d003db15fe9b9c011e2bd326db43576",
+        "EXPIRY": "1dcd6500",
+        "GUARD_AMOUNT": "0000000005f5e100",
+        "GUARD_ASSET": "fb4a191a713aa88e433c1be1a1de296463ccd9fc257888cdbc43da90ef9fff84",
+        "MAKER": "ae152e29a8b433379713fc2e14cc01e8933531e322593b4cd4e2cc0308d9ec64",
+        "MIN_LOT": "0000000000000001",
+        "RATE_DEN": "0000000005f5e100",
+        "RATE_NUM": "0000000000000001",
+        "REFUND_KEY": "9eed3eda279ca8f6620ecfeb7259b671d0eb54bc9975b30174c24510029a30d3"
+      },
+      "script_pubkey": "512033fa11055905131a65ffeefdf0291c3ba62218df76caa8e58d3785cb1c9d63dc",
+      "slots": {},
+      "tweak": "b07ec3dd369fd03588aed88cdf4fe3990b9911de90ffad5a3b452e497dfd47e3"
+    },
+    {
+      "address": {
+        "elementsregtest": "ert1ptxszuhny9lm0u7svefqcpakcdfw4rdszmr75fan6kzkeex4js2lspu9mnu",
+        "sequentia-testnet": "tb1ptxszuhny9lm0u7svefqcpakcdfw4rdszmr75fan6kzkeex4js2lsak8r0z"
+      },
+      "leaves": {
+        "order": {
+          "control_block": "bf50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac00bddeadb64302a1aaead002b98bca55e64aad2fda63616a1d5642101a77fd4fc",
+          "hash": "e4b13df238188c00e5c2ddf41b9962a3082212b1e15090e75b8d453471454aaa"
+        },
+        "terms": {
+          "data": "eceaee6fc6e8d038eafe2d882c4aac1b66aa5c9bbc3cdbc82190365bc5ac0435444275df5e1c570eb1998c00741ce6966362740c05963240241622954eec6548000000e8d4a50fff00000000000000074000000000000000dd4721d40045b97c525f5972fa8a4d76eeadd6cca486b10d9668273cd639d9ef1dcd64ff21a3d5bd2db5eee77123ba6f4a4c2890559e30870ea5b4e6a944ae83b187ad8c14aba73fe998fe7d09a0d06d839b27d89fdc091c89405fc607ee2ddf1eef4aceffffffffffffffff",
+          "hash": "0bddeadb64302a1aaead002b98bca55e64aad2fda63616a1d5642101a77fd4fc"
+        }
+      },
+      "merkle_root": "9e36e1b006cd3faa7055933fab13becb1bd96025fe70bc8024ac402008dabb9f",
+      "name": "order 4: a large prime-ish ratio, the last height expiry, guarded by 2^64-1 atoms; data leaf first, output key parity 1",
+      "output_key": "59a02e5e642ff6fe7a0cca4180f6d86a5d51b602d8fd44f67ab0ad9c9ab282bf",
+      "output_key_parity": 1,
+      "params": {
+        "ASSET_A": "eceaee6fc6e8d038eafe2d882c4aac1b66aa5c9bbc3cdbc82190365bc5ac0435",
+        "ASSET_B": "444275df5e1c570eb1998c00741ce6966362740c05963240241622954eec6548",
+        "EXPIRY": "1dcd64ff",
+        "GUARD_AMOUNT": "ffffffffffffffff",
+        "GUARD_ASSET": "14aba73fe998fe7d09a0d06d839b27d89fdc091c89405fc607ee2ddf1eef4ace",
+        "MAKER": "dd4721d40045b97c525f5972fa8a4d76eeadd6cca486b10d9668273cd639d9ef",
+        "MIN_LOT": "4000000000000000",
+        "RATE_DEN": "0000000000000007",
+        "RATE_NUM": "000000e8d4a50fff",
+        "REFUND_KEY": "21a3d5bd2db5eee77123ba6f4a4c2890559e30870ea5b4e6a944ae83b187ad8c"
+      },
+      "script_pubkey": "512059a02e5e642ff6fe7a0cca4180f6d86a5d51b602d8fd44f67ab0ad9c9ab282bf",
+      "slots": {},
+      "tweak": "cb18e44bdfeb64b1c53106e20c9df0ac5dcb5ccac39e28475ec5b4fd87a3722e"
+    }
+  ],
+  "template_hash": "d68cecbf19c501abc78987833bec226e4a081ef19e484c0b060d3033b4239f60",
+  "vectors": 2
+}

@@ -21,6 +21,8 @@ use simplicityhl::simplicity::jet::Elements;
 use simplicityhl::simplicity::{BitMachine, RedeemNode};
 use simplicityhl::{Arguments, CompiledProgram, WitnessValues};
 
+pub use crate::contracts::Contracts;
+
 pub const USER_SOURCE: &str = include_str!("../programs/user.simf");
 pub const VERIFIER_TEMPLATE: &str = include_str!("../programs/verifier.simf.in");
 pub const ISSUER_SOURCE: &str = include_str!("../programs/issuer.simf");
@@ -112,13 +114,30 @@ pub fn shape_for(n_inputs: usize, n_outputs: usize) -> Result<Shape, String> {
         })
 }
 
-/// Render the verifier template for one shape.
+/// Render the verifier template for one shape, for a policy that lists no
+/// contract template.
 pub fn render_verifier(shape: Shape) -> String {
+    render_verifier_with(shape, &Contracts::none())
+}
+
+/// Render the verifier template for one shape and the policy's contract list.
+///
+/// An empty list renders exactly the program a policy had before contracts
+/// existed, so its commitment roots, and every address derived from them, are
+/// unchanged (`vectors/addresses.json` pins them).
+pub fn render_verifier_with(shape: Shape, contracts: &Contracts) -> String {
+    let listed = !contracts.is_empty();
     let mut input_scan = String::new();
     for i in 1..=shape.n_in {
-        input_scan.push_str(&format!(
-            "    let c{i}: bool = check_input({i}, cu_sender, witness::I{i});\n"
-        ));
+        if listed {
+            input_scan.push_str(&format!(
+                "    let c{i}: bool = check_input_c({i}, sender, cu_sender, witness::I{i});\n"
+            ));
+        } else {
+            input_scan.push_str(&format!(
+                "    let c{i}: bool = check_input({i}, cu_sender, witness::I{i});\n"
+            ));
+        }
     }
     // either(c1, either(c2, ...)) -- a right fold, so a single slot renders as
     // the bare `c1` rather than a needless call.
@@ -127,20 +146,28 @@ pub fn render_verifier(shape: Shape) -> String {
         any = format!("either(c{i}, {any})");
     }
 
+    let (check_output, extra) = if listed { ("check_output_c", "sender, ") } else { ("check_output", "") };
     let mut output_scan = String::new();
     for i in 1..=shape.n_out {
         if i == 1 {
-            output_scan.push_str(
-                "    let paid: u64 = check_output(1, cu_sender, witness::W1);\n",
-            );
+            output_scan.push_str(&format!(
+                "    let paid: u64 = {check_output}(1, {extra}cu_sender, witness::W1);\n",
+            ));
         } else {
             output_scan.push_str(&format!(
-                "    let paid: u64 = add_payment(paid, check_output({i}, cu_sender, witness::W{i}));\n"
+                "    let paid: u64 = add_payment(paid, {check_output}({i}, {extra}cu_sender, witness::W{i}));\n"
             ));
         }
     }
+    let fragments: String = contracts
+        .templates()
+        .iter()
+        .map(|t| t.fragment)
+        .collect::<Vec<_>>()
+        .join("\n");
 
     VERIFIER_TEMPLATE
+        .replace("%%CONTRACT_FNS%%", &fragments)
         .replace("%%DEPTH%%", &DEPTH.to_string())
         .replace("%%NUM_INPUTS_LT%%", &(shape.max_inputs() + 1).to_string())
         .replace("%%NUM_OUTPUTS_LT%%", &(shape.max_outputs() + 1).to_string())
@@ -218,9 +245,25 @@ pub fn compile_verifier(
     pi: &[u8; 32],
     shape: Shape,
 ) -> Result<CompiledProgram, String> {
+    compile_verifier_with(params, u_cmr, wl_root, bl_root, limit, pi, shape, &Contracts::none())
+}
+
+/// [`compile_verifier`] for a policy that lists contract templates: each listed
+/// template's commitment root becomes one more compile-time argument.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_verifier_with(
+    params: &AssetParams,
+    u_cmr: simplicityhl::simplicity::Cmr,
+    wl_root: &[u8; 32],
+    bl_root: &[u8; 32],
+    limit: u64,
+    pi: &[u8; 32],
+    shape: Shape,
+    contracts: &Contracts,
+) -> Result<CompiledProgram, String> {
     let mut cmr_bytes = [0u8; 32];
     cmr_bytes.copy_from_slice(u_cmr.as_ref());
-    let args = arguments(serde_json::json!({
+    let mut map = serde_json::json!({
         "ASSET_A": u256_value(&asset_internal_bytes(&params.asset_a)),
         "ASSET_V": u256_value(&asset_internal_bytes(&params.asset_v)),
         "AMOUNT_Q": u64_value(params.q),
@@ -229,8 +272,12 @@ pub fn compile_verifier(
         "BL_ROOT": u256_value(bl_root),
         "LIMIT": u64_value(limit),
         "PI": u256_value(pi),
-    }))?;
-    CompiledProgram::new(render_verifier(shape).as_str(), args, false)
+    });
+    for t in contracts.templates() {
+        map[t.cmr_param] = u256_value(&t.cmr);
+    }
+    let args = arguments(map)?;
+    CompiledProgram::new(render_verifier_with(shape, contracts).as_str(), args, false)
 }
 
 pub fn compile_issuer(issuer_key: &XOnlyPublicKey) -> Result<CompiledProgram, String> {
@@ -313,6 +360,114 @@ fn in_slot_type() -> String {
 
 fn sender_type() -> String {
     format!("(Pubkey, u32, u32, [(u256, bool); {DEPTH}])")
+}
+
+fn terms_type() -> &'static str {
+    "(u256, (u64, u64), u64, u256, u32)"
+}
+
+fn out_slot_type_c() -> String {
+    format!(
+        "Option<(Option<(Pubkey, u32, u32, [(u256, bool); {DEPTH}])>, Option<{}>)>",
+        terms_type()
+    )
+}
+
+fn in_slot_type_c() -> String {
+    format!(
+        "Option<((u256, u256, [(u256, bool); {DEPTH}]), Option<{}>)>",
+        terms_type()
+    )
+}
+
+/// A guarded order's free terms as the verifier's witness reads them.
+fn terms_literal(t: &Option<crate::contracts::OrderTerms>) -> String {
+    match t {
+        None => "None".into(),
+        Some(t) => format!(
+            "Some((0x{}, ({}, {}), {}, 0x{}, {}))",
+            crate::hexutil::hex(&asset_internal_bytes(&t.asset_b)),
+            t.rate_num,
+            t.rate_den,
+            t.min_lot,
+            crate::hexutil::hex(&t.maker),
+            t.expiry
+        ),
+    }
+}
+
+/// Witness values for a P(pi) spend of `shape`, for a policy that lists
+/// contract templates.
+///
+/// Each output slot is an owner and, when the output is a recognised contract,
+/// that contract's terms: `out_slots[i]` is the owner's key and proof, or
+/// `None` for the sender (who is proven once), and `out_terms[i]` the terms.
+/// A slot with neither is an output that needs no witness: one that does not
+/// carry A, or carries it as change to the sender's own user covenant. Each
+/// input slot is the outpoint's blacklist interval and, when the input is a
+/// recognised contract, its terms.
+pub fn verifier_witness_with_contracts(
+    shape: Shape,
+    sender: &SenderWitness,
+    out_slots: &[SlotWitness],
+    in_slots: &[InputSlotWitness],
+    out_terms: &[Option<crate::contracts::OrderTerms>],
+    in_terms: &[Option<crate::contracts::OrderTerms>],
+) -> Result<WitnessValues, String> {
+    if out_slots.len() != shape.n_out
+        || in_slots.len() != shape.n_in
+        || out_terms.len() != shape.n_out
+        || in_terms.len() != shape.n_in
+    {
+        return Err(format!("shape {shape} wants {} input and {} output slots", shape.n_in, shape.n_out));
+    }
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "SENDER".to_string(),
+        serde_json::json!({
+            "value": format!("({})", wl_slot_literal(&sender.proof)),
+            "type": sender_type(),
+        }),
+    );
+    for i in 0..shape.n_out {
+        let value = match (&out_slots[i], &out_terms[i]) {
+            (None, None) => "None".to_string(),
+            (owner, terms) => {
+                let owner = match owner {
+                    None => "None".to_string(),
+                    Some((_key, proof)) => format!("Some(({}))", wl_slot_literal(proof)),
+                };
+                format!("Some(({owner}, {}))", terms_literal(terms))
+            }
+        };
+        map.insert(
+            format!("W{}", i + 1),
+            serde_json::json!({ "value": value, "type": out_slot_type_c() }),
+        );
+    }
+    for i in 0..shape.n_in {
+        let value = match (&in_slots[i], &in_terms[i]) {
+            (None, None) => "None".to_string(),
+            (None, Some(_)) => {
+                return Err(format!(
+                    "input slot {}: a contract input needs its outpoint's blacklist interval",
+                    i + 1
+                ))
+            }
+            (Some(interval), terms) => format!(
+                "Some(((0x{}, 0x{}, {}), {}))",
+                crate::hexutil::hex(&interval.lo),
+                crate::hexutil::hex(&interval.hi),
+                path_literal(&interval.path),
+                terms_literal(terms)
+            ),
+        };
+        map.insert(
+            format!("I{}", i + 1),
+            serde_json::json!({ "value": value, "type": in_slot_type_c() }),
+        );
+    }
+    from_json(&serde_json::Value::Object(map))
 }
 
 /// Witness values for a P(pi) spend of `shape`.

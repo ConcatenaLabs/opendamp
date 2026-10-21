@@ -19,11 +19,12 @@ use simplicityhl::elements::{
 use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use simplicityhl::CompiledProgram;
 
+use crate::contracts::{Contracts, GuardedOrderInstance, OrderPath, OrderTerms, GUARDED_ORDER};
 use crate::dmt;
 use crate::hexutil::hex;
 use crate::net::Net;
 use crate::programs::{
-    self, compile_issuer, compile_user, compile_verifier, satisfy_program, AssetParams,
+    self, compile_issuer, compile_user, compile_verifier_with, satisfy_program, AssetParams,
     InputSlotWitness, SenderWitness, Shape, SlotWitness,
 };
 use crate::tapscript::{cu_spend_info, cv_spend_info, CovenantSpendInfo, VerifierSpendInfo};
@@ -41,6 +42,9 @@ pub struct Ctx {
     /// makes two policy versions with identical rules distinguishable on chain.
     pub seq: u64,
     pub pi: [u8; 32],
+    /// The contract templates this policy lists. Every verifier leaf carries a
+    /// recogniser for each, and pi commits to the list.
+    pub contracts: Contracts,
     pub user: CompiledProgram,
     /// One primary program per `programs::SHAPES` entry, in that order.
     pub verifiers: Vec<CompiledProgram>,
@@ -86,6 +90,30 @@ impl Ctx {
         limit: u64,
         seq: u64,
     ) -> Result<Self, String> {
+        Self::with_policy_and_contracts(
+            net,
+            params,
+            issuer_key,
+            wl_entries,
+            bl_outpoint_keys,
+            limit,
+            seq,
+            Contracts::none(),
+        )
+    }
+
+    /// [`Ctx::with_policy`] for a policy that also lists contract templates.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_policy_and_contracts(
+        net: Net,
+        params: AssetParams,
+        issuer_key: XOnlyPublicKey,
+        wl_entries: Vec<dmt::Entry>,
+        bl_outpoint_keys: &[[u8; 32]],
+        limit: u64,
+        seq: u64,
+        contracts: Contracts,
+    ) -> Result<Self, String> {
         let wl_tree = dmt::Tree::new(wl_entries)?;
         let bl_tree = dmt::IntervalTree::new(bl_outpoint_keys.to_vec())?;
         let user = compile_user(&params)?;
@@ -95,7 +123,7 @@ impl Ctx {
             Some(bl_tree.root()),
             Some(wl_tree.root()),
             (limit != programs::NO_LIMIT).then_some(limit),
-            None,
+            (!contracts.is_empty()).then(|| contracts.commitment()),
         );
         let pi = crate::policy::pi(
             programs::asset_internal_bytes(&params.asset_a),
@@ -105,7 +133,7 @@ impl Ctx {
 
         let mut verifiers = Vec::with_capacity(programs::SHAPES.len());
         for shape in programs::SHAPES {
-            verifiers.push(compile_verifier(
+            verifiers.push(compile_verifier_with(
                 &params,
                 u_cmr,
                 &wl_tree.root(),
@@ -113,6 +141,7 @@ impl Ctx {
                 limit,
                 &pi,
                 shape,
+                &contracts,
             )?);
         }
         let issuer = compile_issuer(&issuer_key)?;
@@ -128,6 +157,7 @@ impl Ctx {
             limit,
             seq,
             pi,
+            contracts,
             user,
             verifiers,
             issuer,
@@ -606,7 +636,21 @@ pub fn attach_verifier(
     env: Option<&ElementsEnv<Arc<Transaction>>>,
     control_block: &simplicityhl::elements::taproot::ControlBlock,
 ) -> Result<(usize, u32), String> {
-    let witness = programs::verifier_witness(shape, sender, &slots.outputs, &slots.inputs)?;
+    let witness = if slots.contracts {
+        programs::verifier_witness_with_contracts(
+            shape,
+            sender,
+            &slots.outputs,
+            &slots.inputs,
+            &slots.out_terms,
+            &slots.in_terms,
+        )?
+    } else {
+        if slots.out_terms.iter().chain(&slots.in_terms).any(Option::is_some) {
+            return Err("a contract slot in a verifier whose policy lists no contract template".into());
+        }
+        programs::verifier_witness(shape, sender, &slots.outputs, &slots.inputs)?
+    };
     let (stack, size, cost) = simplicity_stack(program, witness, env, control_block)?;
     if cost as u64 > budget_milliweight(size) {
         return Err(format!(
@@ -630,14 +674,35 @@ pub fn attach_verifier(
 pub struct VerifierSlots {
     pub outputs: Vec<SlotWitness>,
     pub inputs: Vec<InputSlotWitness>,
+    /// Whether the policy lists contract templates, which gives every slot the
+    /// wider witness type below.
+    pub contracts: bool,
+    /// With contracts listed: the terms of each output slot that pays a
+    /// recognised contract, whose owner is that slot's key in `outputs`, or
+    /// the sender when `outputs` holds none.
+    pub out_terms: Vec<Option<OrderTerms>>,
+    /// With contracts listed: the terms of each input slot that spends a
+    /// recognised contract owned by the sender.
+    pub in_terms: Vec<Option<OrderTerms>>,
 }
 
 impl VerifierSlots {
+    /// Slots for a policy that lists no contract template.
     pub fn empty(shape: Shape) -> Self {
         VerifierSlots {
             outputs: vec![None; shape.n_out],
             inputs: vec![None; shape.n_in],
+            contracts: false,
+            out_terms: vec![None; shape.n_out],
+            in_terms: vec![None; shape.n_in],
         }
+    }
+
+    /// Slots for `ctx`'s policy, contract templates or not.
+    pub fn empty_for(ctx: &Ctx, shape: Shape) -> Self {
+        let mut s = Self::empty(shape);
+        s.contracts = !ctx.contracts.is_empty();
+        s
     }
 }
 
@@ -660,7 +725,7 @@ pub fn sender_witness(ctx: &Ctx, sender: &XOnlyPublicKey) -> Result<SenderWitnes
 /// already proved, and exempts it from the membership fold, the receive window
 /// and the explicit-value requirement.
 pub fn verifier_slots(ctx: &Ctx, built: &BuiltTransfer) -> Result<VerifierSlots, String> {
-    let mut slots = VerifierSlots::empty(built.shape);
+    let mut slots = VerifierSlots::empty_for(ctx, built.shape);
     let sender = built
         .a_inputs
         .first()
@@ -830,7 +895,7 @@ pub fn complete_transfer(
         verifier_slots(ctx, &built)?
     } else {
         // Invalid-tx path: fill what we can, leave the rest None.
-        let mut slots = VerifierSlots::empty(shape);
+        let mut slots = VerifierSlots::empty_for(ctx, shape);
         let cu_sender_spk = ctx.cu_info(&req.sender).script_pubkey;
         for (out_idx, owner) in &built.a_outputs {
             if (1..=shape.n_out).contains(out_idx)
@@ -1368,4 +1433,275 @@ fn issuer_op(
     sign_fee_input(&old_ctx.net, &mut tx, &prevouts_clone, fee_index, fee_privkey)?;
 
     Ok((tx, prevouts))
+}
+
+// ------------------------------------------------------- contract spends
+
+/// What one input carrying A is, in a transaction that lists every role. Every
+/// such input belongs to the sender: their user covenant, or a recognised
+/// contract they own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AInput {
+    /// C_U(sender). U requires the sender's signature on it.
+    User,
+    /// The sender's guarded order with these terms.
+    Order(OrderTerms),
+}
+
+/// What one output carrying A is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AOutput {
+    /// C_U(sender): change, proven by the sender proof alone.
+    Change,
+    /// C_U(owner) for another whitelisted owner: a payment.
+    Pay(XOnlyPublicKey),
+    /// A guarded order with these terms, owned by `owner`, or by the sender
+    /// when `owner` is `None` (the sender's own coins moved into their own
+    /// order, which is not an acquisition).
+    Order {
+        owner: Option<XOnlyPublicKey>,
+        terms: OrderTerms,
+    },
+}
+
+/// The regulated side of a transaction somebody else laid out: the sender,
+/// and the role of every input and output that carries A.
+#[derive(Clone, Debug)]
+pub struct PolicySpend {
+    pub sender: XOnlyPublicKey,
+    pub inputs: Vec<(usize, AInput)>,
+    pub outputs: Vec<(usize, AOutput)>,
+}
+
+impl Ctx {
+    /// The guarded order the policy recognises: A sold, guarded by q of V,
+    /// owned by `owner`.
+    pub fn order(&self, terms: OrderTerms, owner: &XOnlyPublicKey) -> GuardedOrderInstance {
+        GuardedOrderInstance::for_policy(&self.params, terms, owner)
+    }
+}
+
+/// The script the role says the coin sits at, refusing a contract this
+/// policy does not list.
+fn role_spk(ctx: &Ctx, owner: &XOnlyPublicKey, terms: Option<&OrderTerms>) -> Result<Script, String> {
+    match terms {
+        None => Ok(ctx.cu_info(owner).script_pubkey),
+        Some(t) => {
+            if !ctx.contracts.lists(&GUARDED_ORDER) {
+                return Err(format!(
+                    "this policy (seq {}) does not list {}: the asset cannot enter or leave one",
+                    ctx.seq, GUARDED_ORDER.name
+                ));
+            }
+            Ok(ctx.order(*t, owner).script_pubkey())
+        }
+    }
+}
+
+/// The verifier witness for `spend` in `tx`, after checking every role against
+/// the transaction, so that a mistake is named here rather than by a node:
+/// input 0 is this policy's verifier and output 0 recreates it; every input and
+/// output carrying A has exactly one role and sits at the script that role
+/// names; every owner other than the sender is whitelisted; every regulated
+/// outpoint is unlisted; a fee output carries no A.
+pub fn policy_slots(
+    ctx: &Ctx,
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    spend: &PolicySpend,
+) -> Result<(Shape, SenderWitness, VerifierSlots), String> {
+    if tx.input.len() != prevouts.len() {
+        return Err(format!("{} inputs but {} prevouts", tx.input.len(), prevouts.len()));
+    }
+    let shape = programs::shape_for(tx.input.len(), tx.output.len())?;
+    let a = ctx.params.asset_a;
+    let cv = ctx.cv_info();
+    let v0 = &prevouts[0];
+    if v0.asset.explicit() != Some(ctx.params.asset_v)
+        || v0.value.explicit() != Some(ctx.params.q)
+        || v0.script_pubkey != cv.script_pubkey
+    {
+        return Err("input 0 is not this policy's verifier".into());
+    }
+    let o0 = tx.output.first().ok_or("no outputs")?;
+    if o0.asset.explicit() != Some(ctx.params.asset_v)
+        || o0.value.explicit() != Some(ctx.params.q)
+        || o0.script_pubkey != cv.script_pubkey
+    {
+        return Err("output 0 does not recreate the verifier".into());
+    }
+    let sender = spend.sender;
+    let sender_w = sender_witness(ctx, &sender)?;
+    let mut slots = VerifierSlots::empty_for(ctx, shape);
+
+    let mut a_inputs = 0;
+    for (i, prev) in prevouts.iter().enumerate().skip(1) {
+        let role = spend.inputs.iter().find(|(j, _)| *j == i).map(|(_, r)| *r);
+        let is_a = prev.asset.explicit() == Some(a);
+        match (is_a, role) {
+            (false, None) => continue,
+            (false, Some(_)) => return Err(format!("input {i} is given a role but does not carry the regulated asset")),
+            (true, None) => return Err(format!("input {i} carries the regulated asset and has no role")),
+            (true, Some(role)) => {
+                if i > shape.n_in {
+                    return Err(format!("input {i} is past the {} slots of shape {shape}", shape.n_in));
+                }
+                let terms = match role {
+                    AInput::User => None,
+                    AInput::Order(t) => Some(t),
+                };
+                let want = role_spk(ctx, &sender, terms.as_ref())?;
+                if prev.script_pubkey != want {
+                    return Err(format!("input {i} is not at the script its role names, owned by the sender {sender}"));
+                }
+                let k = outpoint_policy_key(&tx.input[i].previous_output);
+                let interval = ctx.bl_tree.prove_absent(&k).ok_or_else(|| {
+                    format!("input {i}'s outpoint {} is blacklisted", tx.input[i].previous_output)
+                })?;
+                slots.inputs[i - 1] = Some(interval);
+                slots.in_terms[i - 1] = terms;
+                a_inputs += 1;
+            }
+        }
+    }
+    if a_inputs == 0 {
+        return Err("no input carries the regulated asset; only a holder's coin advances the verifier".into());
+    }
+
+    let cu_sender = ctx.cu_info(&sender).script_pubkey;
+    for (i, out) in tx.output.iter().enumerate().skip(1) {
+        let role = spend.outputs.iter().find(|(j, _)| *j == i).map(|(_, r)| *r);
+        let is_a = out.asset.explicit() == Some(a);
+        if out.asset.explicit().is_none() {
+            return Err(format!("output {i} has a confidential asset id, which the verifier refuses"));
+        }
+        match (is_a, role) {
+            (false, None) => continue,
+            (false, Some(_)) => return Err(format!("output {i} is given a role but does not carry the regulated asset")),
+            (true, None) => return Err(format!("output {i} carries the regulated asset and has no role")),
+            (true, Some(role)) => {
+                if out.script_pubkey.is_empty() {
+                    return Err(format!("fee output {i} carries the regulated asset"));
+                }
+                if i > shape.n_out {
+                    return Err(format!("output {i} is past the {} slots of shape {shape}", shape.n_out));
+                }
+                let (owner, terms) = match role {
+                    AOutput::Change => (sender, None),
+                    AOutput::Pay(y) => (y, None),
+                    AOutput::Order { owner, terms } => (owner.unwrap_or(sender), Some(terms)),
+                };
+                let want = role_spk(ctx, &owner, terms.as_ref())?;
+                if out.script_pubkey != want {
+                    return Err(format!("output {i} is not at the script its role names"));
+                }
+                if out.script_pubkey == cu_sender {
+                    continue; // change: no slot witness
+                }
+                if owner != sender {
+                    if out.value.explicit().is_none() {
+                        return Err(format!("output {i} pays another owner with a hidden value"));
+                    }
+                    let proof = ctx
+                        .wl_tree
+                        .prove(&owner.serialize())
+                        .ok_or_else(|| format!("output {i}'s owner {owner} is not in the whitelist"))?;
+                    slots.outputs[i - 1] = Some((owner, proof));
+                }
+                slots.out_terms[i - 1] = terms;
+            }
+        }
+    }
+    Ok((shape, sender_w, slots))
+}
+
+/// Attach the verifier's witness for `spend` to input 0 of `tx`. The verifier
+/// signs nothing, so this needs no key: anyone holding the snapshot can build
+/// it, a taker filling an order included. With `validate` the program is
+/// pruned against `tx` and run; without it the witness is attached unpruned,
+/// for a test that wants the node to do the refusing.
+///
+/// Returns (witness stack size in bytes, cost in milli-WU).
+pub fn attach_policy_verifier(
+    ctx: &Ctx,
+    tx: &mut Transaction,
+    prevouts: &[TxOut],
+    spend: &PolicySpend,
+    validate: bool,
+) -> Result<(usize, u32), String> {
+    let (shape, sender_w, slots) = policy_slots(ctx, tx, prevouts, spend)?;
+    let p_cmr = ctx.p_cmr(shape)?;
+    let p_cb = ctx.verifier_spend().control_for(shape)?.clone();
+    let env = covenant_env(&ctx.net, tx, prevouts, 0, p_cmr, p_cb.clone());
+    attach_verifier(
+        tx,
+        ctx.verifier_for(shape)?,
+        shape,
+        &sender_w,
+        &slots,
+        validate.then_some(&env),
+        &p_cb,
+    )
+}
+
+/// Sign the sender's C_U input `index` of `tx` and attach U's witness.
+pub fn sign_user_input(
+    ctx: &Ctx,
+    tx: &mut Transaction,
+    prevouts: &[TxOut],
+    index: usize,
+    sender_privkey: &[u8; 32],
+) -> Result<usize, String> {
+    let secp = Secp256k1::new();
+    let sk = SecretKey::from_slice(sender_privkey).map_err(|e| format!("bad sender key: {e}"))?;
+    let sender = Keypair::from_secret_key(&secp, &sk).x_only_public_key().0;
+    let (info, u_cb) = cu_spend_info(ctx.u_cmr(), &sender);
+    if prevouts[index].script_pubkey != info.script_pubkey {
+        return Err(format!("input {index} is not C_U({sender})"));
+    }
+    let env = covenant_env(&ctx.net, tx, prevouts, index, ctx.u_cmr(), u_cb.clone());
+    let (sig, _) = sign_bip340(sender_privkey, &sig_all_digest(&env))?;
+    let witness = programs::user_witness(&sender, &sig)?;
+    attach_simplicity(tx, index, &ctx.user, witness, Some(&env), &u_cb)
+}
+
+/// Attach a guarded order's spend to input `index` of `tx`, with no compiler:
+/// the pruned program of `path` from the pinned `fills.json`, and the witness
+/// the template specifies. A refund is signed by `refund_privkey`, the order's
+/// owner, over the transaction's `sig_all_hash` for this input.
+pub fn attach_order_spend(
+    net: &Net,
+    tx: &mut Transaction,
+    prevouts: &[TxOut],
+    index: usize,
+    inst: &GuardedOrderInstance,
+    path: OrderPath,
+    refund_privkey: Option<&[u8; 32]>,
+) -> Result<usize, String> {
+    let (info, cb) = inst.spend_info();
+    if prevouts[index].script_pubkey != info.script_pubkey {
+        return Err(format!("input {index} is not this guarded order"));
+    }
+    let sig = match (path, refund_privkey) {
+        (OrderPath::Refund, Some(k)) => {
+            let env = covenant_env(net, tx, prevouts, index, GuardedOrderInstance::cmr(), cb.clone());
+            let (sig, signer) = sign_bip340(k, &sig_all_digest(&env))?;
+            if signer.serialize() != inst.refund_key {
+                return Err("the refund key is not the order's owner".into());
+            }
+            Some(sig)
+        }
+        (OrderPath::Refund, None) => return Err("a refund needs the owner's key".into()),
+        (_, Some(_)) => return Err("a fill signs nothing".into()),
+        (_, None) => None,
+    };
+    let stack = crate::contracts::guarded_order_stack(inst, path, sig.as_ref())?;
+    let size = stack.iter().map(Vec::len).sum();
+    tx.input[index].witness = TxInWitness {
+        amount_rangeproof: None,
+        inflation_keys_rangeproof: None,
+        script_witness: stack,
+        pegin_witness: vec![],
+    };
+    Ok(size)
 }

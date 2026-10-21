@@ -168,3 +168,37 @@ fn outpoint_key_prints_the_blacklist_entry() {
             .unwrap()
     );
 }
+
+/// `predicates.contracts` lists templates by hash, ascending, each one this
+/// build recognises; pi commits to the list.
+#[test]
+fn a_contract_list_is_read_and_held_to_its_rules() {
+    let listed = example("snapshot-contracts.json");
+    let out = derive(&listed).expect("the listed example reads");
+    assert_eq!(line(&out, "pi"), listed["pi"].as_str().unwrap());
+    assert!(line(&out, "contracts").starts_with("seqdex/guarded-order d68cecbf"), "{out}");
+    // The same policy without the list is the seq 0 example, pi and all.
+    let mut plain = listed.clone();
+    plain["predicates"].as_object_mut().unwrap().remove("contracts");
+    plain["pi"] = example("snapshot-seq0.json")["pi"].clone();
+    let out = derive(&plain).expect("the list is optional");
+    assert_eq!(line(&out, "contracts"), "none");
+    // A declared pi that ignores the list is refused.
+    let mut stale = listed.clone();
+    stale["pi"] = plain["pi"].clone();
+    assert!(derive(&stale).unwrap_err().contains("pi"));
+    // An unknown template, a repeat, and an empty-string entry are refused.
+    let mut unknown = listed.clone();
+    unknown["predicates"]["contracts"] = serde_json::json!(["42".repeat(32)]);
+    unknown.as_object_mut().unwrap().remove("pi");
+    let e = derive(&unknown).unwrap_err();
+    assert!(e.contains("is not one this build can whitelist"), "{e}");
+    let mut twice = unknown.clone();
+    let h = listed["predicates"]["contracts"][0].clone();
+    twice["predicates"]["contracts"] = serde_json::json!([h, h]);
+    let e = derive(&twice).unwrap_err();
+    assert!(e.contains("ascending order with no repeat"), "{e}");
+    let mut short = unknown.clone();
+    short["predicates"]["contracts"] = serde_json::json!(["d68c"]);
+    assert!(derive(&short).is_err());
+}
