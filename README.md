@@ -170,14 +170,17 @@ and its vectors are vendored in `contracts/` from
 sells this asset, its guard is this asset's verifier asset and `q`, and its
 refund key is its **owner**, a whitelisted holder. The maker chooses the rest.
 
-The verifier treats an order as its owner's coin:
+The verifier treats an order as its owner's coin, and its owner is always the
+sender:
 
-- Paying into an order the sender owns is change.
-- Paying into an order another holder owns is a payment to that holder: their
-  proof and receive window apply, and the amount counts against the limit.
-- Spending an order, by a fill or by its refund, is a transfer by its owner:
-  the owner's whitelist entry and lockup, the single-sender rule and the
+- Spending an order, by a fill or by its refund, is a transfer by its owner.
+  The owner's whitelist entry and lockup, the single-sender rule and the
   blacklist apply, and every output of the asset is scanned like any other.
+- An output to an order is either the remainder of an order input of the
+  same transaction, or a new order of the sender's in a transaction where
+  the sender signs one of their `C_U` inputs.
+- An order in another holder's name is refused. To give a holder the asset,
+  pay their `C_U`.
 
 A fill therefore needs nothing from the maker. Anyone holding the snapshot
 builds the verifier's witness, and the order's own witness is its terms and
@@ -194,8 +197,9 @@ SHA256 of the scriptPubKey every fill pays, and `asset_b` is in display hex.
 - `inputs`, every input of the asset, as `{index, role: "user"}` or
   `{index, role: "order", terms}`;
 - `outputs`, every output of the asset, as `{index, role: "change"}`,
-  `{index, role: "pay", owner}`, or `{index, role: "order", terms}` with an
-  `owner` when the order is another holder's.
+  `{index, role: "pay", owner}`, or `{index, role: "order", terms}`. An order
+  output is the sender's. It is the remainder when an order input sits at
+  the same script, and otherwise a new order, which needs a `user` input.
 
 It checks every role against the transaction before it builds anything. It
 then runs the verifier locally and writes the document back with input 0's

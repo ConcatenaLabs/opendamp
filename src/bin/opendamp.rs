@@ -1163,8 +1163,7 @@ struct RoleRef {
     index: usize,
     /// `user`, `order` (inputs); `change`, `pay`, `order` (outputs).
     role: String,
-    /// The owner of a payment or of an order output; absent for an order the
-    /// sender owns.
+    /// The owner of a payment; an order output is always the sender's.
     #[serde(default)]
     owner: Option<String>,
     #[serde(default)]
@@ -1225,10 +1224,16 @@ fn cmd_contract_verifier(args: &Args) -> Result<(), String> {
         let a = match (r.role.as_str(), owner, &r.terms) {
             ("change", None, None) => AOutput::Change,
             ("pay", Some(o), None) => AOutput::Pay(o),
-            ("order", owner, Some(t)) => AOutput::Order { owner, terms: t.terms()? },
+            ("order", None, Some(t)) => AOutput::Order(t.terms()?),
+            ("order", Some(_), _) => {
+                return Err(format!(
+                    "output {}: an order output is always the sender's; it names no owner",
+                    r.index
+                ))
+            }
             (other, _, _) => {
                 return Err(format!(
-                    "output {}: role {other:?} (change; pay with owner; order with terms and, for another owner, owner)",
+                    "output {}: role {other:?} (change; pay with owner; order with terms)",
                     r.index
                 ))
             }

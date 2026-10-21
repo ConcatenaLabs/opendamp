@@ -272,9 +272,9 @@ fn pi_changes_the_address() {
 
 /// Static cost and witness stack of the verifier of a policy that lists the
 /// guarded order, with `n_in` input and `n_out` output slots filled; with
-/// `terms`, each filled slot also carries an order's terms (a contract input
-/// owned by the sender, a contract output owned by a proven owner), which is
-/// the widest branch a slot can take.
+/// `terms`, each filled input slot is an order of the sender's and each filled
+/// output slot a new order of the sender's, instead of a user covenant and a
+/// payment.
 fn measure_listed(shape: Shape, n_in: usize, n_out: usize, terms: bool) -> (u64, usize) {
     let listed = Contracts::from_hashes(&[opendamp::contracts::GUARDED_ORDER.template_hash]).unwrap();
     let src = render_verifier_with(shape, &listed);
@@ -283,25 +283,24 @@ fn measure_listed(shape: Shape, n_in: usize, n_out: usize, terms: bool) -> (u64,
     let terms_ty = "(u256, (u64, u64), u64, u256, u32)";
     let proof_ty = format!("(Pubkey, u32, u32, [(u256, bool); {DEPTH}])");
     let bl_ty = format!("(u256, u256, [(u256, bool); {DEPTH}])");
-    let out_ty = format!("Option<(Option<{proof_ty}>, Option<{terms_ty}>)>");
+    let out_ty = format!("Option<Either<{proof_ty}, Either<u32, (u32, {terms_ty})>>>");
     let in_ty = format!("Option<({bl_ty}, Option<{terms_ty}>)>");
     let path: Vec<String> = (0..DEPTH).map(|_| format!("(0x{}, false)", "00".repeat(32))).collect();
     let path = path.join(", ");
-    let t = if terms {
-        format!("Some((0x{}, (3, 2), 1000, 0x{}, 1200))", "ee".repeat(32), "ab".repeat(32))
-    } else {
-        "None".to_string()
-    };
+    let tt = format!("(0x{}, (3, 2), 1000, 0x{}, 1200)", "ee".repeat(32), "ab".repeat(32));
+    let t = if terms { format!("Some({tt})") } else { "None".to_string() };
     let mut w = serde_json::Map::new();
     w.insert(
         "SENDER".into(),
         serde_json::json!({"value": format!("(0x{}, 0, 0, [{path}])", "cc".repeat(32)), "type": proof_ty}),
     );
     for i in 1..=shape.n_out {
-        let v = if i <= n_out {
-            format!("Some((Some((0x{}, 0, 0, [{path}])), {t}))", "dd".repeat(32))
-        } else {
+        let v = if i > n_out {
             "None".into()
+        } else if terms {
+            format!("Some(Right(Right((1, {tt}))))")
+        } else {
+            format!("Some(Left((0x{}, 0, 0, [{path}])))", "dd".repeat(32))
         };
         w.insert(format!("W{i}"), serde_json::json!({"value": v, "type": out_ty}));
     }
@@ -324,23 +323,26 @@ fn measure_listed(shape: Shape, n_in: usize, n_out: usize, terms: bool) -> (u64,
 }
 
 /// Listing the guarded order adds a recogniser to every slot of every leaf.
-/// Each leaf must still pay for itself with no pad from the smallest
-/// legitimate witness (the sender proof, one input slot and one output slot,
-/// neither a contract), and the recogniser must stay a bounded share of the
-/// cost.
+/// Each leaf must still pay for itself with no pad from the smallest witness
+/// any spend can present: the sender proof and one input slot, every output
+/// change or not carrying the asset. (An order's remainder or a new order of
+/// the sender's carries no membership proof, so outputs can add almost
+/// nothing.) The recogniser must also stay a bounded share of the cost.
 #[test]
 fn every_shape_still_pays_for_itself_when_the_policy_lists_the_order() {
-    eprintln!("\nshape  cost(mWU) listed  min stack  margin | with terms: stack  margin | listing adds");
+    eprintln!("\nshape  cost(mWU) listed  min stack  margin | 1 payment: stack  margin | 1 new order: stack  margin | listing adds");
     for shape in SHAPES {
         let (base, _) = measure(&render_verifier(shape), shape, 1, 1);
-        let (cost, stack) = measure_listed(shape, 1, 1, false);
+        let (cost, stack) = measure_listed(shape, 1, 0, false);
+        let (cost_p, stack_p) = measure_listed(shape, 1, 1, false);
         let (cost_t, stack_t) = measure_listed(shape, 1, 1, true);
-        assert_eq!(cost, cost_t, "the static bound does not depend on the witness");
+        assert!(cost == cost_t && cost == cost_p, "the static bound does not depend on the witness");
         let b = budget(stack);
         eprintln!(
-            "{:>5}  {cost:>16}  {stack:>9}  {:>5.2}x | {stack_t:>17}  {:>5.2}x | {:>5.1}%",
+            "{:>5}  {cost:>16}  {stack:>9}  {:>5.2}x | {stack_p:>16}  {:>5.2}x | {stack_t:>18}  {:>5.2}x | {:>5.1}%",
             shape.name(),
             b as f64 / cost as f64,
+            budget(stack_p) as f64 / cost as f64,
             budget(stack_t) as f64 / cost as f64,
             (cost as f64 / base as f64 - 1.0) * 100.0
         );

@@ -368,7 +368,7 @@ fn terms_type() -> &'static str {
 
 fn out_slot_type_c() -> String {
     format!(
-        "Option<(Option<(Pubkey, u32, u32, [(u256, bool); {DEPTH}])>, Option<{}>)>",
+        "Option<Either<(Pubkey, u32, u32, [(u256, bool); {DEPTH}]), Either<u32, (u32, {})>>>",
         terms_type()
     )
 }
@@ -381,42 +381,45 @@ fn in_slot_type_c() -> String {
 }
 
 /// A guarded order's free terms as the verifier's witness reads them.
+fn terms_tuple(t: &crate::contracts::OrderTerms) -> String {
+    format!(
+        "(0x{}, ({}, {}), {}, 0x{}, {})",
+        crate::hexutil::hex(&asset_internal_bytes(&t.asset_b)),
+        t.rate_num,
+        t.rate_den,
+        t.min_lot,
+        crate::hexutil::hex(&t.maker),
+        t.expiry
+    )
+}
+
 fn terms_literal(t: &Option<crate::contracts::OrderTerms>) -> String {
     match t {
         None => "None".into(),
-        Some(t) => format!(
-            "Some((0x{}, ({}, {}), {}, 0x{}, {}))",
-            crate::hexutil::hex(&asset_internal_bytes(&t.asset_b)),
-            t.rate_num,
-            t.rate_den,
-            t.min_lot,
-            crate::hexutil::hex(&t.maker),
-            t.expiry
-        ),
+        Some(t) => format!("Some({})", terms_tuple(t)),
     }
 }
 
 /// Witness values for a P(pi) spend of `shape`, for a policy that lists
 /// contract templates.
 ///
-/// Each output slot is an owner and, when the output is a recognised contract,
-/// that contract's terms: `out_slots[i]` is the owner's key and proof, or
-/// `None` for the sender (who is proven once), and `out_terms[i]` the terms.
-/// A slot with neither is an output that needs no witness: one that does not
-/// carry A, or carries it as change to the sender's own user covenant. Each
-/// input slot is the outpoint's blacklist interval and, when the input is a
-/// recognised contract, its terms.
+/// Each output slot is a payment to another owner's user covenant
+/// (`out_slots[i]`, the owner's key and proof), or an order of the sender's
+/// (`out_contracts[i]`), or neither: an output that does not carry A, or
+/// carries it as change to the sender's own user covenant. Each input slot is
+/// the outpoint's blacklist interval and, when the input is an order of the
+/// sender's, its terms.
 pub fn verifier_witness_with_contracts(
     shape: Shape,
     sender: &SenderWitness,
     out_slots: &[SlotWitness],
     in_slots: &[InputSlotWitness],
-    out_terms: &[Option<crate::contracts::OrderTerms>],
+    out_contracts: &[Option<crate::contracts::OutContract>],
     in_terms: &[Option<crate::contracts::OrderTerms>],
 ) -> Result<WitnessValues, String> {
     if out_slots.len() != shape.n_out
         || in_slots.len() != shape.n_in
-        || out_terms.len() != shape.n_out
+        || out_contracts.len() != shape.n_out
         || in_terms.len() != shape.n_in
     {
         return Err(format!("shape {shape} wants {} input and {} output slots", shape.n_in, shape.n_out));
@@ -430,14 +433,19 @@ pub fn verifier_witness_with_contracts(
         }),
     );
     for i in 0..shape.n_out {
-        let value = match (&out_slots[i], &out_terms[i]) {
+        use crate::contracts::OutContract;
+        let value = match (&out_slots[i], &out_contracts[i]) {
             (None, None) => "None".to_string(),
-            (owner, terms) => {
-                let owner = match owner {
-                    None => "None".to_string(),
-                    Some((_key, proof)) => format!("Some(({}))", wl_slot_literal(proof)),
-                };
-                format!("Some(({owner}, {}))", terms_literal(terms))
+            (Some((_key, proof)), None) => format!("Some(Left(({})))", wl_slot_literal(proof)),
+            (None, Some(OutContract::Continues(j))) => format!("Some(Right(Left({j})))"),
+            (None, Some(OutContract::New { signed_at, terms })) => {
+                format!("Some(Right(Right(({signed_at}, {}))))", terms_tuple(terms))
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "output slot {}: an order output is the sender's; it carries no other owner's proof",
+                    i + 1
+                ))
             }
         };
         map.insert(
