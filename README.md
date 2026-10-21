@@ -76,7 +76,7 @@ a command prints is broadcast with `sendrawtransaction`.
 | `issuer-update --snapshot S --next-snapshot S' --request R --issuer-privkey HEX` | move the verifier from policy `S` to policy `S'` |
 | `outpoint-key --txid T --vout N` | the policy key of an outpoint, as a snapshot's blacklist lists it |
 | `order-address --snapshot S --owner X --terms FILE` | the guarded order this policy recognises for an owner and a maker's terms: its address, script, data leaf and control block |
-| `contract-verifier --snapshot S --transaction T [--out FILE]` | the verifier's witness for a transaction somebody else laid out that moves the asset into, inside or out of a listed contract (below); it signs nothing |
+| `contract-verifier --snapshot S --transaction T [--sender-privkey HEX] [--out FILE]` | the verifier's witness for a transaction somebody else laid out that moves the asset into, inside or out of a listed contract (below); with `--sender-privkey`, also the sender's signature on each of their `C_U` inputs |
 | `halt --snapshot S --to-spk HEX --request R --issuer-privkey HEX` | send the verifier asset out of the covenant, which stops every transfer of the asset; a halt must burn it (an `OP_RETURN` script), for the reason in the issuer section of `src/txbuild.rs`, and records the burned verifier in V's token covenant (below) |
 
 A **request file** (`examples/transfer-request.json`) names the sender's key
@@ -199,7 +199,9 @@ SHA256 of the scriptPubKey every fill pays, and `asset_b` is in display hex.
 
 It checks every role against the transaction before it builds anything. It
 then runs the verifier locally and writes the document back with input 0's
-witness in place.
+witness in place. A fill needs no key. Moving the sender's own coins into an
+order does, and `--sender-privkey` signs each input whose role is `user`. The
+order's own input, and the other inputs, are left as they came.
 
 ## Layout
 

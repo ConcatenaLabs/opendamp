@@ -16,7 +16,7 @@
 //!   opendamp halt          --snapshot S --to-spk HEX --request R \
 //!                          --issuer-privkey HEX
 //!   opendamp order-address --snapshot S --owner X --terms FILE
-//!   opendamp contract-verifier --snapshot S --transaction T [--out FILE]
+//!   opendamp contract-verifier --snapshot S --transaction T [--sender-privkey HEX] [--out FILE]
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -36,8 +36,8 @@ use opendamp::tapscript::{
 use opendamp::elements::{confidential, Transaction, TxOut};
 use opendamp::txbuild::{
     attach_policy_verifier, build_transfer, complete_issuer_op, complete_issuer_op_recording, complete_transfer,
-    cosign_transfer, covenant_env, regulated_flows, sig_all_digest, AInput, AOutput, Ctx, Flow, IssuerReq,
-    PolicySpend, TokenRecord, TransferReq,
+    cosign_transfer, covenant_env, regulated_flows, sig_all_digest, sign_user_input, AInput, AOutput, Ctx, Flow,
+    IssuerReq, PolicySpend, TokenRecord, TransferReq,
 };
 
 fn main() {
@@ -1181,8 +1181,9 @@ struct ContractTx {
 }
 
 /// Attach the verifier's witness to input 0 of a transaction somebody else
-/// laid out that moves the asset into, inside or out of a listed contract. It
-/// signs nothing and needs no key.
+/// laid out that moves the asset into, inside or out of a listed contract. The
+/// verifier signs nothing, so this needs no key; with `--sender-privkey` it
+/// also signs every input whose role is `user`, the sender's own C_U.
 fn cmd_contract_verifier(args: &Args) -> Result<(), String> {
     let (_snap, ctx) = load_snapshot(args.one("snapshot")?)?;
     let path = args.one("transaction")?;
@@ -1235,6 +1236,15 @@ fn cmd_contract_verifier(args: &Args) -> Result<(), String> {
         spend.outputs.push((r.index, a));
     }
     let (size, cost) = attach_policy_verifier(&ctx, &mut tx, &prevouts, &spend, true)?;
+    if let Some(k) = args.opt("sender-privkey") {
+        let sk = unhex32(k)?;
+        for (i, role) in &spend.inputs {
+            if *role == AInput::User {
+                let n = sign_user_input(&ctx, &mut tx, &prevouts, *i, &sk)?;
+                eprintln!("input {i}: C_U({}) signed, witness {n} B", spend.sender);
+            }
+        }
+    }
     let shape = programs::shape_for(tx.input.len(), tx.output.len())?;
     eprintln!(
         "verifier input 0: leaf {}, witness {size} B, cost {cost} milli-WU, budget {} WU",
