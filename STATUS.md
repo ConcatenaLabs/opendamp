@@ -139,14 +139,19 @@ every verifier leaf with a recogniser for it. Proved in
    script the verifier rebuilds from the template's root and the witness's
    terms, with four terms fixed by the policy: the order sells A, its guard is
    exactly q of V, and its refund key is the owner. An order of another
-   template, guarded by another asset, guarded by another amount, selling
-   another asset, or owned by a key not on the whitelist is not recognised.
-2. **Ownership.** An order owned by the sender is the sender's change. One
-   owned by another key is a payment to that key: its whitelist proof and
-   receive window apply, and its value counts against the limit. Every A
-   input, user covenant or order, is the sender's. Filling an order is
-   therefore a transfer by its owner: a removed owner's order does not fill,
-   and an order fills with no signature of its owner's in the transaction.
+   template, guarded by another asset, guarded by another amount, or selling
+   another asset is not recognised.
+2. **Ownership.** Every order is the sender's.
+   - Every A input, user covenant or order, is the sender's, so filling an
+     order is a transfer by its owner. A removed owner's order does not fill,
+     and an order fills with no signature of its owner's in the transaction.
+   - An A output to an order is admitted only as the remainder of an order
+     input at the same script, or as a new order when the sender signs one of
+     their C_U inputs.
+   - An order in another holder's name is refused, whitelisted or not.
+   - A taker cannot route the filled A into a new order in the maker's name.
+     No witness for that exists, so pruning fails at every input it could name
+     as signed, and the only submittable form is refused.
 3. **Leaving.** Every A output of a transaction that spends an order is
    scanned: a fill or a refund cannot pay A to a plain script, to a holder off
    the whitelist, or into an order the list does not name.
@@ -325,24 +330,29 @@ reaches for most often carries a 65-byte control block and the rest carry 129.
 Listing the template adds a recogniser to every slot, which costs the same
 whether or not a transfer uses it, because the static bound covers the whole
 program. `tests/cost_profile.rs` asserts that every leaf still pays for itself
-from the smallest legitimate witness, and that listing adds under 40%.
+from the smallest witness any spend can present, and that listing adds under
+40%.
 
 | leaf | static cost | min witness stack | margin | listing adds |
 |---|---|---|---|---|
-| `p3x5` |  9,639,806 mWU | 4,181 B | 1.74x | 28.1% |
-| `p3x4` |  8,229,274 mWU | 4,156 B | 2.03x | 28.3% |
-| `p4x6` | 12,542,736 mWU | 4,233 B | 1.35x | 29.7% |
-| `p5x7` | 15,446,700 mWU | 4,287 B | 1.11x | 30.8% |
+| `p3x5` |  8,584,986 mWU | 3,685 B | 1.72x | 14.1% |
+| `p3x4` |  7,438,159 mWU | 3,661 B | 1.98x | 16.0% |
+| `p4x6` | 11,224,211 mWU | 3,737 B | 1.34x | 16.1% |
+| `p5x7` | 13,864,470 mWU | 3,791 B | 1.10x | 17.4% |
+
+The minimum witness here is the sender proof and one input slot, every output
+change. An order's remainder or a new order of the sender's carries no
+membership proof, so an output can add as little as an index.
 
 A spend is charged its pruned program's cost. The transactions of the regtest
 proof:
 
 | transaction | leaf | vsize | verifier stack | cost | budget |
 |---|---|---|---|---|---|
-| alice's A into her own order | `p3x5` | 1,575 vB | 3,606 B | 4,889 WU | 14,474 WU |
-| a fill in part, the A to bob | `p5x7` | 2,224 vB | 4,391 B | 15,224 WU | 17,614 WU |
+| alice's A into her own order | `p3x5` | 1,581 vB | 3,627 B | 4,939 WU | 14,558 WU |
+| a fill in part, the A to bob | `p5x7` | 2,207 vB | 4,326 B | 13,642 WU | 17,354 WU |
 | the refund of the rest | `p3x4` | 1,594 vB | 3,537 B | 4,041 WU | 14,198 WU |
-| a whole fill | `p4x6` | 2,095 vB | 4,298 B | 11,273 WU | 17,242 WU |
+| a whole fill | `p4x6` | 2,079 vB | 4,236 B | 11,058 WU | 16,994 WU |
 
 The order's own input carries 1,580 bytes of witness in a fill (program 1,286 B,
 witness 197 B).
@@ -444,9 +454,10 @@ and input 1 the order. Every fee is paid in an issued asset.
 | E. alice moves A from her C_U into her own guarded order | mined |
 | into `seqdex/order`, which is not on the list | refused, input 0, `Assertion failed inside jet` |
 | into a guarded order guarded by another asset; by q+1; selling another asset | refused, input 0, each |
-| into an order owned by carol, who is not whitelisted, under bob's proof | refused, input 0 |
+| into an order in carol's name (not whitelisted); in bob's name (whitelisted) | refused, input 0, each |
 | F. the order filled in part, the A to bob; alice signs nothing | mined |
 | the fill paying the A to a plain key; to C_U(carol); into `seqdex/order` | refused, input 0, each |
+| the fill routing the A into a new order in alice's name, its proceeds to the taker | the builder refuses; refused, input 0, under the fill's verifier; the witness naming it a new order cannot be pruned at any input (`Jet failed during execution`), and its unpruned form is refused (`Program has FAIL node`) |
 | the fill with no verifier at input 0; beside q of another asset there | refused, input 1 (the order's guard) |
 | R. after the expiry, alice refunds the rest into her C_U | mined |
 | the refund paying the A to C_U(carol); to a plain key | refused, input 0, each |

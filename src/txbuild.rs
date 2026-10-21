@@ -19,7 +19,7 @@ use simplicityhl::elements::{
 use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use simplicityhl::CompiledProgram;
 
-use crate::contracts::{Contracts, GuardedOrderInstance, OrderPath, OrderTerms, GUARDED_ORDER};
+use crate::contracts::{Contracts, GuardedOrderInstance, OrderPath, OrderTerms, OutContract, GUARDED_ORDER};
 use crate::dmt;
 use crate::hexutil::hex;
 use crate::net::Net;
@@ -642,11 +642,11 @@ pub fn attach_verifier(
             sender,
             &slots.outputs,
             &slots.inputs,
-            &slots.out_terms,
+            &slots.out_contracts,
             &slots.in_terms,
         )?
     } else {
-        if slots.out_terms.iter().chain(&slots.in_terms).any(Option::is_some) {
+        if slots.out_contracts.iter().any(Option::is_some) || slots.in_terms.iter().any(Option::is_some) {
             return Err("a contract slot in a verifier whose policy lists no contract template".into());
         }
         programs::verifier_witness(shape, sender, &slots.outputs, &slots.inputs)?
@@ -677,10 +677,9 @@ pub struct VerifierSlots {
     /// Whether the policy lists contract templates, which gives every slot the
     /// wider witness type below.
     pub contracts: bool,
-    /// With contracts listed: the terms of each output slot that pays a
-    /// recognised contract, whose owner is that slot's key in `outputs`, or
-    /// the sender when `outputs` holds none.
-    pub out_terms: Vec<Option<OrderTerms>>,
+    /// With contracts listed: how each output slot that pays an order of the
+    /// sender's is admitted (that slot's entry in `outputs` is then `None`).
+    pub out_contracts: Vec<Option<OutContract>>,
     /// With contracts listed: the terms of each input slot that spends a
     /// recognised contract owned by the sender.
     pub in_terms: Vec<Option<OrderTerms>>,
@@ -693,7 +692,7 @@ impl VerifierSlots {
             outputs: vec![None; shape.n_out],
             inputs: vec![None; shape.n_in],
             contracts: false,
-            out_terms: vec![None; shape.n_out],
+            out_contracts: vec![None; shape.n_out],
             in_terms: vec![None; shape.n_in],
         }
     }
@@ -1455,13 +1454,13 @@ pub enum AOutput {
     Change,
     /// C_U(owner) for another whitelisted owner: a payment.
     Pay(XOnlyPublicKey),
-    /// A guarded order with these terms, owned by `owner`, or by the sender
-    /// when `owner` is `None` (the sender's own coins moved into their own
-    /// order, which is not an acquisition).
-    Order {
-        owner: Option<XOnlyPublicKey>,
-        terms: OrderTerms,
-    },
+    /// A guarded order of the sender's with these terms. It is admitted as the
+    /// remainder of an order input of the transaction at the same script, or
+    /// as a new order when one of the inputs is the sender's user covenant,
+    /// whose program requires the sender's signature over the transaction. An
+    /// order in anyone else's name is never admitted: it would let a party put
+    /// the asset under a holder's name while keeping the order's proceeds.
+    Order(OrderTerms),
 }
 
 /// The regulated side of a transaction somebody else laid out: the sender,
@@ -1569,6 +1568,11 @@ pub fn policy_slots(
     }
 
     let cu_sender = ctx.cu_info(&sender).script_pubkey;
+    let signed_at = spend
+        .inputs
+        .iter()
+        .find(|(_, r)| *r == AInput::User)
+        .map(|(i, _)| *i as u32);
     for (i, out) in tx.output.iter().enumerate().skip(1) {
         let role = spend.outputs.iter().find(|(j, _)| *j == i).map(|(_, r)| *r);
         let is_a = out.asset.explicit() == Some(a);
@@ -1589,7 +1593,7 @@ pub fn policy_slots(
                 let (owner, terms) = match role {
                     AOutput::Change => (sender, None),
                     AOutput::Pay(y) => (y, None),
-                    AOutput::Order { owner, terms } => (owner.unwrap_or(sender), Some(terms)),
+                    AOutput::Order(terms) => (sender, Some(terms)),
                 };
                 let want = role_spk(ctx, &owner, terms.as_ref())?;
                 if out.script_pubkey != want {
@@ -1598,17 +1602,39 @@ pub fn policy_slots(
                 if out.script_pubkey == cu_sender {
                     continue; // change: no slot witness
                 }
-                if owner != sender {
-                    if out.value.explicit().is_none() {
-                        return Err(format!("output {i} pays another owner with a hidden value"));
+                match terms {
+                    None => {
+                        if out.value.explicit().is_none() {
+                            return Err(format!("output {i} pays another owner with a hidden value"));
+                        }
+                        let proof = ctx
+                            .wl_tree
+                            .prove(&owner.serialize())
+                            .ok_or_else(|| format!("output {i}'s owner {owner} is not in the whitelist"))?;
+                        slots.outputs[i - 1] = Some((owner, proof));
                     }
-                    let proof = ctx
-                        .wl_tree
-                        .prove(&owner.serialize())
-                        .ok_or_else(|| format!("output {i}'s owner {owner} is not in the whitelist"))?;
-                    slots.outputs[i - 1] = Some((owner, proof));
+                    Some(t) => {
+                        // The remainder of an order input at the same script, or
+                        // a new order the sender signs for.
+                        let continues = prevouts
+                            .iter()
+                            .enumerate()
+                            .skip(1)
+                            .find(|(_, p)| p.asset.explicit() == Some(a) && p.script_pubkey == out.script_pubkey)
+                            .map(|(j, _)| j as u32);
+                        slots.out_contracts[i - 1] = Some(match (continues, signed_at) {
+                            (Some(j), _) => OutContract::Continues(j),
+                            (None, Some(s)) => OutContract::New { signed_at: s, terms: t },
+                            (None, None) => {
+                                return Err(format!(
+                                    "output {i} opens a new order in {sender}'s name, and nothing in this \
+                                     transaction is signed by {sender}: a new order needs one of the \
+                                     sender's own user-covenant coins as an input"
+                                ))
+                            }
+                        });
+                    }
                 }
-                slots.out_terms[i - 1] = terms;
             }
         }
     }

@@ -497,21 +497,12 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
     let into_own_order = PolicySpend {
         sender: alice,
         inputs: vec![(1, AInput::User)],
-        outputs: vec![(1, AOutput::Order { owner: None, terms }), (2, AOutput::Change)],
+        outputs: vec![(1, AOutput::Order(terms)), (2, AOutput::Change)],
     };
     let (vw, vc) = attach_policy_verifier(&ctx, &mut entry, &prev, &into_own_order, true).expect("the verifier accepts");
     sign_entry(&mut entry, &prev);
 
-    // A control paying into an order bob owns: another owner, proven.
-    let bob_order = ctx.order(terms, &bob);
-    let (mut entry_bob, prev_b) = entry_tx(&bob_order.script_pubkey(), &fee0);
-    let into_bobs_order = PolicySpend {
-        sender: alice,
-        inputs: vec![(1, AInput::User)],
-        outputs: vec![(1, AOutput::Order { owner: Some(bob), terms }), (2, AOutput::Change)],
-    };
-    attach_policy_verifier(&ctx, &mut entry_bob, &prev_b, &into_bobs_order, true).expect("bob's order is recognised");
-    sign_entry(&mut entry_bob, &prev_b);
+    let prev_b = prev.clone();
 
     // Refusals at entry. Each negative carries the verifier witness of the
     // control beside it, pruned for the recognised order.
@@ -527,7 +518,9 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
         ("entry/neg_listed_template_selling_another_asset", {
             let mut i = order; i.asset_a = opendamp::programs::asset_internal_bytes(&asset_b); i.script_pubkey()
         }, &entry),
-        ("entry/neg_listed_template_owned_by_a_key_not_on_the_whitelist", ctx.order(terms, &carol).script_pubkey(), &entry_bob),
+        ("entry/neg_listed_template_owned_by_a_key_not_on_the_whitelist", ctx.order(terms, &carol).script_pubkey(), &entry),
+        // Not even a whitelisted holder's: an order is always the sender's.
+        ("entry/neg_listed_template_owned_by_another_whitelisted_holder", ctx.order(terms, &bob).script_pubkey(), &entry),
     ];
     for (label, spk, control) in &negatives {
         let (mut bad, prev) = entry_tx(spk, &fee0);
@@ -535,14 +528,12 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
         sign_entry(&mut bad, &prev);
         refuse(&node, &mut rec, &net, label, (&bad, &prev), (control, &prev_b), JET, &[0]);
     }
-    // And the builder names the refusal before any node sees it.
+    // And the builder names the refusal before any node sees it: an order
+    // output is the sender's, so one at carol's order is at no script its role
+    // names.
     let (mut bad, prev) = entry_tx(&ctx.order(terms, &carol).script_pubkey(), &fee0);
-    let err = attach_policy_verifier(&ctx, &mut bad, &prev, &PolicySpend {
-        sender: alice,
-        inputs: vec![(1, AInput::User)],
-        outputs: vec![(1, AOutput::Order { owner: Some(carol), terms }), (2, AOutput::Change)],
-    }, true).unwrap_err();
-    rec.push(serde_json::json!({"proof": "entry/builder_refuses_carols_order", "error": err}));
+    let err = attach_policy_verifier(&ctx, &mut bad, &prev, &into_own_order, true).unwrap_err();
+    rec.push(serde_json::json!({"proof": "entry/builder_refuses_an_order_in_carols_name", "error": err}));
 
     let entry_id = mine(&node, &mut rec, "E/alice_moves_A_into_her_guarded_order", &entry, serde_json::json!({
         "verifier_stack_bytes": vw, "verifier_cost_milli_wu": vc, "verifier_budget_wu": vw * 4 + 50,
@@ -579,7 +570,7 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
     let fill_spend = PolicySpend {
         sender: alice,
         inputs: vec![(1, AInput::Order(terms))],
-        outputs: vec![(1, AOutput::Pay(bob)), (3, AOutput::Order { owner: None, terms })],
+        outputs: vec![(1, AOutput::Pay(bob)), (3, AOutput::Order(terms))],
     };
     let finish_fill = |tx: &mut Transaction, prev: &[TxOut], order_at: usize, pay_at: usize, fee_at: usize| {
         attach_order_spend(&net, tx, prev, order_at, &order, OrderPath::Partial, None).expect("the fill's stack");
@@ -602,6 +593,67 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
         finish_fill(&mut bad, &prev_bad, 1, 2, 3);
         refuse(&node, &mut rec, &net, label, (&bad, &prev_bad), (&fill, &prev), JET, &[0]);
     }
+    // A taker cannot route the filled A into a new order in the maker's name,
+    // with terms the taker chose (here the A at almost no price, and its
+    // proceeds to the taker): nothing in a fill is signed by the maker. Were
+    // it admitted, a party off the whitelist could hold A in alice's name and
+    // keep its proceeds. Three doors, each shut:
+    let grab = OrderTerms { rate_num: 1, rate_den: 1_000_000, maker: spk_hash(&payer_spk), ..terms };
+    let grab_spk = ctx.order(grab, &alice).script_pubkey();
+    // (1) the builder refuses to lay it out;
+    {
+        let (mut bad, prev_bad) = fill_tx(&grab_spk, &verifier, &o1, &pay0, &fee1);
+        let err = attach_policy_verifier(&ctx, &mut bad, &prev_bad, &PolicySpend {
+            sender: alice,
+            inputs: vec![(1, AInput::Order(terms))],
+            outputs: vec![(1, AOutput::Order(grab)), (3, AOutput::Order(terms))],
+        }, true).unwrap_err();
+        rec.push(serde_json::json!({"proof": "fill/builder_refuses_a_new_order_in_the_makers_name", "error": err}));
+    }
+    // (2) under the control's pruned verifier, which pays slot 1 as a payment,
+    // the block refuses it;
+    {
+        let (mut bad, prev_bad) = fill_tx(&grab_spk, &verifier, &o1, &pay0, &fee1);
+        splice_verifier(&mut bad, &fill);
+        finish_fill(&mut bad, &prev_bad, 1, 2, 3);
+        refuse(&node, &mut rec, &net, "fill/neg_routes_the_filled_A_into_a_new_order_in_the_makers_name",
+               (&bad, &prev_bad), (&fill, &prev), JET, &[0]);
+    }
+    // (3) with the witness that names it a new order, signed at some input,
+    // the program fails at the signature check whichever input it names, so
+    // it cannot be pruned, and its unpruned form is refused in a block.
+    {
+        let (mut bad, prev_bad) = fill_tx(&grab_spk, &verifier, &o1, &pay0, &fee1);
+        let shape = programs::shape_for(bad.input.len(), bad.output.len()).unwrap();
+        let mut slots = opendamp::txbuild::VerifierSlots::empty_for(&ctx, shape);
+        let k = opendamp::txbuild::outpoint_policy_key(&bad.input[1].previous_output);
+        slots.inputs[0] = Some(ctx.bl_tree.prove_absent(&k).unwrap());
+        slots.in_terms[0] = Some(terms);
+        slots.outputs[0] = None;
+        slots.out_contracts[2] = Some(opendamp::contracts::OutContract::Continues(1));
+        let sender_w = opendamp::txbuild::sender_witness(&ctx, &alice).unwrap();
+        let p_cb = ctx.verifier_spend().control_for(shape).unwrap().clone();
+        let p_env = covenant_env(&net, &bad, &prev_bad, 0, ctx.p_cmr(shape).unwrap(), p_cb.clone());
+        let mut tried = Vec::new();
+        for s_at in 1..bad.input.len() as u32 {
+            slots.out_contracts[0] = Some(opendamp::contracts::OutContract::New { signed_at: s_at, terms: grab });
+            let e = opendamp::txbuild::attach_verifier(
+                &mut bad.clone(), ctx.verifier_for(shape).unwrap(), shape, &sender_w, &slots, Some(&p_env), &p_cb,
+            )
+            .unwrap_err();
+            tried.push(format!("signed_at {s_at}: {e}"));
+        }
+        rec.push(serde_json::json!({"proof": "fill/new_order_witness_cannot_be_pruned_at_any_input", "errors": tried}));
+        slots.out_contracts[0] = Some(opendamp::contracts::OutContract::New { signed_at: 1, terms: grab });
+        opendamp::txbuild::attach_verifier(
+            &mut bad, ctx.verifier_for(shape).unwrap(), shape, &sender_w, &slots, None, &p_cb,
+        )
+        .expect("the unpruned form assembles");
+        finish_fill(&mut bad, &prev_bad, 1, 2, 3);
+        refuse(&node, &mut rec, &net, "fill/neg_the_only_submittable_form_of_a_new_order_in_the_makers_name",
+               (&bad, &prev_bad), (&fill, &prev), "Program has FAIL node", &[0]);
+    }
+
     // The order cannot be filled without the verifier: the payer's coin at
     // input 0 and nothing of V anywhere, the order at input 1 as before.
     {
@@ -738,7 +790,7 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
     attach_policy_verifier(&ctx, &mut e2, &prev, &PolicySpend {
         sender: alice,
         inputs: vec![(1, AInput::User)],
-        outputs: vec![(1, AOutput::Order { owner: None, terms: terms2 }), (2, AOutput::Change)],
+        outputs: vec![(1, AOutput::Order(terms2)), (2, AOutput::Change)],
     }, true).unwrap();
     sign_user_input(&ctx, &mut e2, &prev, 1, &alice_sk).unwrap();
     sign_fee_input(&net, &mut e2, &prev, 2, &fee_sk).unwrap();
@@ -803,7 +855,7 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
         attach_policy_verifier(ctx, &mut tx, &prev, &PolicySpend {
             sender: owner,
             inputs: vec![(1, AInput::User)],
-            outputs: vec![(1, AOutput::Order { owner: None, terms: terms5 }), (2, AOutput::Change)],
+            outputs: vec![(1, AOutput::Order(terms5)), (2, AOutput::Change)],
         }, true).unwrap();
         sign_user_input(ctx, &mut tx, &prev, 1, owner_sk).unwrap();
         sign_fee_input(&net, &mut tx, &prev, 2, &fee_sk).unwrap();
@@ -980,7 +1032,7 @@ fn a_network_enforced_asset_enters_an_order_and_leaves_it() {
     attach_policy_verifier(&ctx, &mut e3, &prev, &PolicySpend {
         sender: alice,
         inputs: vec![(1, AInput::User)],
-        outputs: vec![(1, AOutput::Order { owner: None, terms: terms3 }), (2, AOutput::Change)],
+        outputs: vec![(1, AOutput::Order(terms3)), (2, AOutput::Change)],
     }, true).unwrap();
     sign_user_input(&ctx, &mut e3, &prev, 1, &alice_sk).unwrap();
     sign_fee_input(&net, &mut e3, &prev, 2, &fee_sk).unwrap();

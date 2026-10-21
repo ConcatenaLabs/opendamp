@@ -124,9 +124,9 @@ key provides no key-path spend. On the primary path, P(pi) checks:
    verifier output.
 4. Every output exposes an explicit asset identifier, EXCEPT outputs for
    which `output_is_fee` holds (see 2.3). Every output carrying A pays
-   C_U(Y) for its witness-supplied recipient key Y, or a contract of a
-   template the policy lists owned by Y (section 2.5), computed with the
-   taproot-construction jets.
+   C_U(Y) for its witness-supplied recipient key Y, computed with the
+   taproot-construction jets, or an order of the sender's of a template the
+   policy lists (section 2.4).
 5. All enabled policy predicates hold (section 3).
 
 Checks 3 and 4 are stronger than the paper's, and check 4 has an exemption the
@@ -242,15 +242,30 @@ policy fixes four terms, which the witness cannot supply:
 
 The maker's commercial terms come from the witness.
 
-**A contract coin is its owner's coin.**
+**A contract coin is its owner's coin, and its owner is always the sender.**
 
-- An A output to a recognised order owned by the sender is change. One owned
-  by another key Y is a payment to Y: Y's membership proof and receive window
-  apply, and its explicit value counts against the limit.
 - An A input from a recognised order must be owned by the sender, who is
   proven once with their lockup. So filling an order is a transfer by its
   owner, and it needs no signature from them: their consent is the terms they
   put the coin under.
+- An A output to an order is admitted only as the sender's, in one of two
+  ways. It may continue an order input of the same transaction at that
+  input's script: a fill's remainder, which needs no signature. Or it may be
+  a new order of the sender's, when one of the transaction's inputs is the
+  sender's C_U, whose U requires the sender's signature over the whole
+  transaction and so over the new order's terms.
+- An order in anyone else's name is never admitted, and neither is a new
+  order in the sender's name that the sender did not sign for. The order's
+  payout (MAKER) can be any script, so either would let a party place A under
+  a holder's name while keeping its proceeds:
+  - a taker off the whitelist could fill an order, put the A into a fresh
+    order in the maker's name that pays the taker, and trade it without ever
+    being whitelisted;
+  - a holder about to be frozen could keep selling through orders in
+    another's name.
+
+  A payment to another holder goes to that holder's C_U, where the holder
+  then decides.
 - The single-sender rule, the whitelist freeze, lockups, the limit and the
   outpoint blacklist therefore reach a coin in a contract exactly as they
   reach a C_U.
@@ -258,8 +273,8 @@ The maker's commercial terms come from the witness.
   remainder and expiry. The verifier checks who owns and who receives.
 
 **Leaving.** Every A output of a transaction that spends a contract coin is
-scanned as in 2.2. It pays the sender's C_U, a whitelisted C_U(Y), or a
-recognised contract with a whitelisted owner, and never a fee output. A
+scanned as in 2.2. It pays the sender's C_U, a whitelisted C_U(Y), or an order
+of the sender's admitted as above, and never a fee output. A
 contract is not a way around the policy: who ends up holding A is still the
 whitelist's decision.
 
@@ -270,8 +285,8 @@ whitelist's decision.
   maker (2k), the remainder at the same order (2k+1), change and the fee.
 
 The verifier proves the maker as the sender, the order input, the taker as a
-whitelisted recipient and the remainder as the maker's own contract. The order
-proves the trade.
+whitelisted recipient, and the remainder as the continuation of the order
+input. The order proves the trade.
 
 **What listing commits.** The list is committed into pi through the fourth
 slot of `rules_root` (3.1). A policy that lists nothing renders its verifier

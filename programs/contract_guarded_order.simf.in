@@ -3,8 +3,8 @@
  * Rendered into the verifier only when the policy lists the template
  * `seqdex/guarded-order` (sequentia-contracts, templates/seqdex_guarded_order).
  * A policy that lists no template renders the verifier without this fragment,
- * so its programs, and every address derived from them, are the ones a policy
- * had before contracts existed.
+ * so its programs, and every address derived from them, are exactly those of a
+ * verifier with no contract code at all.
  *
  * An instance of the template is
  *
@@ -26,8 +26,9 @@
  *                  leaves it is scanned by this program like any other. An
  *                  order guarded by another asset is not recognised, because
  *                  whoever holds q of that asset could empty it unpoliced.
- *   REFUND_KEY   = the order's OWNER: the sender, or a whitelisted key that the
- *                  slot proves. The owner is who the order's A belongs to.
+ *   REFUND_KEY   = the order's OWNER, who is always the sender: an A input in
+ *                  an order is the sender's coin, and an A output to an
+ *                  order is the sender's (see check_output_c for how).
  *
  * The other six (ASSET_B, the price, MIN_LOT, MAKER, EXPIRY) are the maker's
  * commercial terms and are read from the witness.
@@ -59,15 +60,6 @@ fn order_spk_hash(t: (u256, (u64, u64), u64, u256, u32), owner: Pubkey) -> u256 
     let nums: Pubkey = 0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0;
     let out_key: Pubkey = jet::build_taptweak(nums, root);
     spk_hash_of_key(out_key)
-}
-
-/* The script an A coin owned by `owner` may sit at: its user covenant, or a
- * recognised contract the owner owns. */
-fn owned_spk_hash(owner: Pubkey, terms: Option<(u256, (u64, u64), u64, u256, u32)>) -> u256 {
-    match terms {
-        None => cu_spk_hash(owner),
-        Some(t: (u256, (u64, u64), u64, u256, u32)) => order_spk_hash(t, owner),
-    }
 }
 
 /* Scan one INPUT slot when the policy lists contracts.
@@ -103,14 +95,28 @@ fn check_input_c(i: u32, sender: Pubkey, cu_sender: u256, w: Option<((u256, u256
 
 /* Scan one OUTPUT slot when the policy lists contracts.
  *
- * An A output pays an OWNER, at that owner's user covenant or in a recognised
- * contract the owner owns. The owner is the sender (no proof, no receive window,
- * not counted against the limit: moving your own coins into your own order is
- * not an acquisition), or a key the slot proves on the whitelist, whose receive
- * window applies and whose explicit value counts against the transfer limit. A
- * contract is therefore never a way past the whitelist: who ends up holding A,
- * in a covenant or in a contract, is a whitelisted key. */
-fn check_output_c(i: u32, sender: Pubkey, cu_sender: u256, w: Option<(Option<(Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])>, Option<(u256, (u64, u64), u64, u256, u32)>)>) -> u64 {
+ * An A output pays the sender's user covenant (change), another owner's user
+ * covenant (a payment: proven, window open, counted against the limit), or an
+ * order of the SENDER's. An order output is admitted in exactly two ways:
+ *
+ *   Left(j)       it continues an order input of this transaction: its script
+ *                 is the script of input j, which carries A, so the input scan
+ *                 has already recognised it as an order the sender owns. This
+ *                 is a fill's remainder, which the order's own program puts at
+ *                 its own script, and it needs no signature.
+ *   Right((s, t)) a new order of the sender's with terms t, and input s is the
+ *                 sender's user covenant. U runs there and requires the
+ *                 sender's signature over the whole transaction, this output
+ *                 included, so the sender chose these terms.
+ *
+ * An order owned by anyone else is never admitted, and neither is a new order
+ * in the sender's name that the sender did not sign for. Either would let a
+ * party place A under a holder's name while keeping its proceeds (the order's
+ * MAKER is any script): a party off the whitelist could buy A through a fill
+ * and hold it in someone else's order, and a frozen holder could keep selling
+ * through orders in another's name. So who owns an order is always the holder
+ * whose coins went into it, by their own signature. */
+fn check_output_c(i: u32, sender: Pubkey, cu_sender: u256, w: Option<Either<(Pubkey, u32, u32, [(u256, bool); %%DEPTH%%]), Either<u32, (u32, (u256, (u64, u64), u64, u256, u32))>>>) -> u64 {
     match jet::output_amount(i) {
         None => 0,
         Some(av: (Asset1, Amount1)) => {
@@ -123,23 +129,31 @@ fn check_output_c(i: u32, sender: Pubkey, cu_sender: u256, w: Option<(Option<(Pu
                         let spk: u256 = unwrap(jet::output_script_hash(i));
                         match jet::eq_256(spk, cu_sender) {
                             true => 0, // change
-                            false => {
-                                let (owner_w, terms): (Option<(Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])>, Option<(u256, (u64, u64), u64, u256, u32)>) = unwrap(w);
-                                match owner_w {
-                                    // The sender's own contract.
-                                    None => {
-                                        assert!(jet::eq_256(owned_spk_hash(sender, terms), spk));
+                            false => match unwrap(w) {
+                                // A payment to another owner's user covenant.
+                                Left(o: (Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])) => {
+                                    let (y, send_after, recv_after, proof): (Pubkey, u32, u32, [(u256, bool); %%DEPTH%%]) = o;
+                                    assert!(jet::eq_256(cu_spk_hash(y), spk));
+                                    require_wl_member(y, send_after, recv_after, proof);
+                                    require_height_bound(recv_after);
+                                    explicit_value(v)
+                                },
+                                Right(own: Either<u32, (u32, (u256, (u64, u64), u64, u256, u32))>) => match own {
+                                    // The remainder of an order input.
+                                    Left(j: u32) => {
+                                        let (ja, jv): (Asset1, Amount1) = unwrap(jet::input_amount(j));
+                                        require_explicit_asset_eq(ja, param::ASSET_A);
+                                        assert!(jet::eq_256(unwrap(jet::input_script_hash(j)), spk));
                                         0
                                     },
-                                    // Another owner: proven, window open, counted.
-                                    Some(o: (Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])) => {
-                                        let (y, send_after, recv_after, proof): (Pubkey, u32, u32, [(u256, bool); %%DEPTH%%]) = o;
-                                        assert!(jet::eq_256(owned_spk_hash(y, terms), spk));
-                                        require_wl_member(y, send_after, recv_after, proof);
-                                        require_height_bound(recv_after);
-                                        explicit_value(v)
+                                    // A new order of the sender's, signed for at input s.
+                                    Right(n: (u32, (u256, (u64, u64), u64, u256, u32))) => {
+                                        let (s, t): (u32, (u256, (u64, u64), u64, u256, u32)) = n;
+                                        assert!(jet::eq_256(unwrap(jet::input_script_hash(s)), cu_sender));
+                                        assert!(jet::eq_256(order_spk_hash(t, sender), spk));
+                                        0
                                     },
-                                }
+                                },
                             },
                         }
                     },

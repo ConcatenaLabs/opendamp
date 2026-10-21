@@ -239,6 +239,19 @@ impl GuardedOrderInstance {
     }
 }
 
+/// How the verifier admits an output of A to a guarded order. The order is
+/// always the sender's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutContract {
+    /// The output continues order input `j` of the same transaction, at that
+    /// input's script: a fill's remainder. No signature is needed.
+    Continues(u32),
+    /// A new order of the sender's with these terms. Input `signed_at` is the
+    /// sender's user covenant, whose program requires the sender's signature
+    /// over the whole transaction.
+    New { signed_at: u32, terms: OrderTerms },
+}
+
 /// How a guarded order's coin is spent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderPath {
