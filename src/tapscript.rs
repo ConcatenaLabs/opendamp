@@ -134,8 +134,16 @@ pub fn p2tr_spk(output_key: &XOnlyPublicKey) -> Script {
 /// Returns the spend info plus the control block for the U leaf (its sibling
 /// is the hidden TapData(owner) node).
 pub fn cu_spend_info(u_cmr: Cmr, owner: &XOnlyPublicKey) -> (CovenantSpendInfo, ControlBlock) {
-    let leaf = simplicity_leaf_hash(u_cmr).to_byte_array();
-    let data = tap_data_hash(&owner.serialize()).to_byte_array();
+    leaf_beside_data(u_cmr, &owner.serialize())
+}
+
+/// `P2TR(NUMS, TapBranch(TapLeaf_0xbe(cmr), H_TapData(data)))`: one Simplicity
+/// leaf beside a data leaf, the shape of C_U and of every contract template
+/// that keeps its terms as data. Returns the spend info and the leaf's control
+/// block (its sibling is the data leaf).
+pub fn leaf_beside_data(cmr: Cmr, data: &[u8]) -> (CovenantSpendInfo, ControlBlock) {
+    let leaf = simplicity_leaf_hash(cmr).to_byte_array();
+    let data = tap_data_hash(data).to_byte_array();
     let info = CovenantSpendInfo::from_root(tap_branch(leaf, data));
     let cb = info.control_block(data);
     (info, cb)

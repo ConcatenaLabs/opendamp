@@ -6,15 +6,19 @@
 //! asset_A is the asset id in internal (hash) byte order and seq is big-endian.
 //!
 //! rules_root is a two-level binary Merkle root over the four predicate
-//! commitments in fixed order [blacklist, whitelist, limit, windows]; an
+//! commitments in fixed order [blacklist, whitelist, limit, contracts]; an
 //! absent predicate commits to 32 zero bytes:
 //!
-//!   rules_root = SHA256(SHA256(c_bl || c_wl) || SHA256(c_lim || c_win))
+//!   rules_root = SHA256(SHA256(c_bl || c_wl) || SHA256(c_lim || c_con))
 //!
-//! For v1 the whitelist commitment is its dmt-v1 root; the blacklist
-//! commitment is its dmt-v1 root (enforced by issuer policy discipline, not
-//! in-covenant; see STATUS.md); limit commits to BE64(limit) left-padded to
-//! 32 bytes; windows is unused (zero).
+//! The whitelist commitment is its dmt-v1 root and the blacklist commitment
+//! its dmt-v1 interval root; limit commits to BE64(limit) left-padded to 32
+//! bytes; contracts commits to the policy's list of contract templates
+//! (`contracts::Contracts::commitment`), zero when it lists none. Nothing else
+//! commits in the fourth slot: dmt-v1 refuses the design document's
+//! class-keyed windows array, because height bounds live in the whitelist
+//! leaves. A policy that lists no contract therefore commits zero there, and
+//! its pi is the same as if contracts did not exist.
 
 use simplicityhl::elements::hashes::{sha256, Hash, HashEngine};
 
@@ -37,7 +41,7 @@ pub fn rules_root(
     blacklist: Option<[u8; 32]>,
     whitelist: Option<[u8; 32]>,
     limit: Option<u64>,
-    windows: Option<[u8; 32]>,
+    contracts: Option<[u8; 32]>,
 ) -> [u8; 32] {
     let c_bl = blacklist.unwrap_or(EMPTY_COMMITMENT);
     let c_wl = whitelist.unwrap_or(EMPTY_COMMITMENT);
@@ -48,9 +52,9 @@ pub fn rules_root(
             c
         })
         .unwrap_or(EMPTY_COMMITMENT);
-    let c_win = windows.unwrap_or(EMPTY_COMMITMENT);
+    let c_con = contracts.unwrap_or(EMPTY_COMMITMENT);
     let left = sha256_cat(&[&c_bl, &c_wl]);
-    let right = sha256_cat(&[&c_lim, &c_win]);
+    let right = sha256_cat(&[&c_lim, &c_con]);
     sha256_cat(&[&left, &right])
 }
 

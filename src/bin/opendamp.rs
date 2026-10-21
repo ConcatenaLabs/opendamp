@@ -15,10 +15,13 @@
 //!                          --issuer-privkey HEX
 //!   opendamp halt          --snapshot S --to-spk HEX --request R \
 //!                          --issuer-privkey HEX
+//!   opendamp order-address --snapshot S --owner X --terms FILE
+//!   opendamp contract-verifier --snapshot S --transaction T [--out FILE]
 
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use opendamp::contracts::{Contracts, OrderTerms, GUARDED_ORDER};
 use opendamp::dmt;
 use opendamp::elements::hashes::Hash as _;
 use opendamp::elements::pset::serialize::Serialize as _;
@@ -32,8 +35,9 @@ use opendamp::tapscript::{
 };
 use opendamp::elements::{confidential, Transaction, TxOut};
 use opendamp::txbuild::{
-    build_transfer, complete_issuer_op, complete_issuer_op_recording, complete_transfer, cosign_transfer,
-    covenant_env, regulated_flows, sig_all_digest, Ctx, Flow, IssuerReq, TokenRecord, TransferReq,
+    attach_policy_verifier, build_transfer, complete_issuer_op, complete_issuer_op_recording, complete_transfer,
+    cosign_transfer, covenant_env, regulated_flows, sig_all_digest, AInput, AOutput, Ctx, Flow, IssuerReq,
+    PolicySpend, TokenRecord, TransferReq,
 };
 
 fn main() {
@@ -52,7 +56,7 @@ struct Args {
 
 fn usage() -> String {
     "usage: opendamp <derive|registry|vectors|transfer-build|transfer-finalize|\
-     transfer-cosign|issuer-update|halt> --snapshot FILE [...] | \
+     transfer-cosign|issuer-update|halt|order-address|contract-verifier> --snapshot FILE [...] | \
      opendamp outpoint-key --txid TXID --vout N"
         .to_string()
 }
@@ -165,6 +169,12 @@ struct Predicates {
     /// list is accepted and any rule in it is refused.
     #[serde(default)]
     windows: Option<Vec<serde_json::Value>>,
+    /// The contract templates the asset may enter, by template hash, in
+    /// ascending order with no repeat. Each must be one this build can
+    /// recognise (`contracts::WHITELISTABLE`); a policy naming any other is
+    /// refused rather than published with a list its verifier would not honour.
+    #[serde(default)]
+    contracts: Option<Vec<String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -331,7 +341,18 @@ fn load_snapshot(path: &str) -> Result<(Snapshot, Ctx), String> {
                 .into(),
         );
     }
-    let ctx = Ctx::with_policy(net, params, issuer, wl, &bl, limit, snap.seq)?;
+    let mut hashes = Vec::new();
+    for (i, h) in p.contracts.iter().flatten().enumerate() {
+        let h = unhex32(h).map_err(|e| format!("{path}: predicates.contracts[{i}]: {e}"))?;
+        if hashes.last().is_some_and(|prev: &[u8; 32]| *prev >= h) {
+            return Err(format!(
+                "{path}: predicates.contracts must be in ascending order with no repeat, so that a list has one encoding"
+            ));
+        }
+        hashes.push(h);
+    }
+    let contracts = Contracts::from_hashes(&hashes).map_err(|e| format!("{path}: {e}"))?;
+    let ctx = Ctx::with_policy_and_contracts(net, params, issuer, wl, &bl, limit, snap.seq, contracts)?;
     check_declared("a whitelist root", &snap.predicates.whitelist.root, &ctx.wl_tree.root())?;
     if let Some(b) = &snap.predicates.blacklist {
         check_declared("a blacklist root", &b.root, &ctx.bl_tree.root())?;
@@ -349,6 +370,21 @@ fn load_snapshot(path: &str) -> Result<(Snapshot, Ctx), String> {
 fn pi_of(snap: &Snapshot, ctx: &Ctx) -> [u8; 32] {
     debug_assert_eq!(snap.seq, ctx.seq);
     ctx.pi
+}
+
+/// The contract templates a policy lists, each by its hash, name and root.
+fn contract_docs(ctx: &Ctx) -> serde_json::Value {
+    serde_json::Value::Array(
+        ctx.contracts
+            .templates()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "template_hash": hex(&t.template_hash), "name": t.name, "cmr": hex(&t.cmr),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// One document per verifier leaf: the menu, with each shape's CMR, tapleaf
@@ -498,6 +534,8 @@ fn run() -> Result<(), String> {
         "issuer-update" => cmd_issuer(&args, false),
         "halt" => cmd_issuer(&args, true),
         "outpoint-key" => cmd_outpoint_key(&args),
+        "order-address" => cmd_order_address(&args),
+        "contract-verifier" => cmd_contract_verifier(&args),
         other => Err(format!("unknown command {other}\n{}", usage())),
     }
 }
@@ -544,6 +582,12 @@ fn cmd_derive(args: &Args) -> Result<(), String> {
             ctx.limit.to_string()
         }
     );
+    if ctx.contracts.is_empty() {
+        println!("contracts      none");
+    }
+    for t in ctx.contracts.templates() {
+        println!("contracts      {} {} (root {})", t.name, hex(&t.template_hash), hex(&t.cmr));
+    }
     println!("pi             {}", hex(&pi_of(&snap, &ctx)));
     println!("U   CMR        {}", ctx.u_cmr());
     for shape in programs::SHAPES {
@@ -589,6 +633,7 @@ fn cmd_registry(args: &Args) -> Result<(), String> {
             "blacklist_root": hex(&ctx.bl_tree.root()),
             "blacklisted_outpoints": ctx.bl_tree.keys.len(),
             "transfer_limit": ctx.limit,
+            "contracts": contract_docs(&ctx),
         },
         "programs": {
             format!("opendamp/user/v1/{}", ctx.params.asset_a): {
@@ -716,6 +761,14 @@ fn cmd_vectors(args: &Args) -> Result<(), String> {
             "empty_blacklist_root": hex(&dmt::IntervalTree::new(vec![])?.root()),
         },
     });
+    // A policy that lists contract templates carries the list and its
+    // commitment; one that lists none has neither key, so its vectors read as
+    // they always have.
+    let mut doc = doc;
+    if !ctx.contracts.is_empty() {
+        doc["policy"]["contracts"] = contract_docs(&ctx);
+        doc["policy"]["contracts_commitment"] = hex(&ctx.contracts.commitment()).into();
+    }
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     match args.opt("out") {
         Some(path) => {
@@ -1045,5 +1098,157 @@ fn cmd_issuer(args: &Args, halt: bool) -> Result<(), String> {
         "verifier": t.recorded,
     });
     println!("{doc}");
+    Ok(())
+}
+
+// ------------------------------------------------------------ contracts
+
+/// A guarded order's own terms, as a request names them.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TermsRef {
+    /// The asset a fill pays in, display hex.
+    asset_b: String,
+    rate_num: u64,
+    rate_den: u64,
+    min_lot: u64,
+    /// SHA256 of the scriptPubKey every fill pays, hex.
+    maker: String,
+    expiry: u32,
+}
+
+impl TermsRef {
+    fn terms(&self) -> Result<OrderTerms, String> {
+        Ok(OrderTerms {
+            asset_b: asset(&self.asset_b)?,
+            rate_num: self.rate_num,
+            rate_den: self.rate_den,
+            min_lot: self.min_lot,
+            maker: unhex32(&self.maker)?,
+            expiry: self.expiry,
+        })
+    }
+}
+
+/// The guarded order this policy recognises for an owner and terms: its
+/// address, script, data leaf and control block.
+fn cmd_order_address(args: &Args) -> Result<(), String> {
+    let (_snap, ctx) = load_snapshot(args.one("snapshot")?)?;
+    if !ctx.contracts.lists(&GUARDED_ORDER) {
+        return Err(format!("this policy does not list {}", GUARDED_ORDER.name));
+    }
+    let owner = xonly(args.one("owner")?)?;
+    let path = args.one("terms")?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let t: TermsRef = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    let inst = ctx.order(t.terms()?, &owner);
+    let (info, cb) = inst.spend_info();
+    let doc = serde_json::json!({
+        "template": GUARDED_ORDER.name,
+        "template_hash": hex(&GUARDED_ORDER.template_hash),
+        "cmr": hex(&GUARDED_ORDER.cmr),
+        "owner": owner.to_string(),
+        "data": hex(&inst.data()),
+        "script_pubkey": hex(info.script_pubkey.as_bytes()),
+        "address": info.address(ctx.net.address_params).to_string(),
+        "control_block": hex(&cb.serialize()),
+    });
+    println!("{}", serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoleRef {
+    index: usize,
+    /// `user`, `order` (inputs); `change`, `pay`, `order` (outputs).
+    role: String,
+    /// The owner of a payment or of an order output; absent for an order the
+    /// sender owns.
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    terms: Option<TermsRef>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ContractTx {
+    tx: String,
+    prevouts: Vec<PrevoutRef>,
+    sender: String,
+    inputs: Vec<serde_json::Value>,
+    outputs: Vec<serde_json::Value>,
+}
+
+/// Attach the verifier's witness to input 0 of a transaction somebody else
+/// laid out that moves the asset into, inside or out of a listed contract. It
+/// signs nothing and needs no key.
+fn cmd_contract_verifier(args: &Args) -> Result<(), String> {
+    let (_snap, ctx) = load_snapshot(args.one("snapshot")?)?;
+    let path = args.one("transaction")?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let mut doc: ContractTx = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "{path}: {e}; expected {{\"tx\", \"prevouts\": [{{asset, value, script_pubkey}}...], \"sender\", \
+             \"inputs\": [{{index, role, terms?}}], \"outputs\": [{{index, role, owner?, terms?}}]}}"
+        )
+    })?;
+    let mut tx: Transaction = opendamp::elements::encode::deserialize(&unhex(&doc.tx)?)
+        .map_err(|e| format!("{path}: tx is not a transaction: {e}"))?;
+    let mut prevouts = Vec::with_capacity(doc.prevouts.len());
+    for (i, p) in doc.prevouts.iter().enumerate() {
+        prevouts.push(TxOut {
+            asset: confidential::Asset::Explicit(asset(&p.asset).map_err(|e| format!("prevout {i}: {e}"))?),
+            value: confidential::Value::Explicit(p.value),
+            nonce: confidential::Nonce::Null,
+            script_pubkey: Script::from(unhex(&p.script_pubkey)?),
+            witness: Default::default(),
+        });
+    }
+    let role = |v: &serde_json::Value| -> Result<RoleRef, String> {
+        serde_json::from_value(v.clone()).map_err(|e| format!("{path}: a role: {e}"))
+    };
+    let mut spend = PolicySpend { sender: xonly(&doc.sender)?, inputs: Vec::new(), outputs: Vec::new() };
+    for v in &doc.inputs {
+        let r = role(v)?;
+        let a = match (r.role.as_str(), &r.terms) {
+            ("user", None) => AInput::User,
+            ("order", Some(t)) => AInput::Order(t.terms()?),
+            (other, _) => return Err(format!("input {}: role {other:?} (user, or order with terms)", r.index)),
+        };
+        spend.inputs.push((r.index, a));
+    }
+    for v in &doc.outputs {
+        let r = role(v)?;
+        let owner = r.owner.as_deref().map(xonly).transpose()?;
+        let a = match (r.role.as_str(), owner, &r.terms) {
+            ("change", None, None) => AOutput::Change,
+            ("pay", Some(o), None) => AOutput::Pay(o),
+            ("order", owner, Some(t)) => AOutput::Order { owner, terms: t.terms()? },
+            (other, _, _) => {
+                return Err(format!(
+                    "output {}: role {other:?} (change; pay with owner; order with terms and, for another owner, owner)",
+                    r.index
+                ))
+            }
+        };
+        spend.outputs.push((r.index, a));
+    }
+    let (size, cost) = attach_policy_verifier(&ctx, &mut tx, &prevouts, &spend, true)?;
+    let shape = programs::shape_for(tx.input.len(), tx.output.len())?;
+    eprintln!(
+        "verifier input 0: leaf {}, witness {size} B, cost {cost} milli-WU, budget {} WU",
+        shape.name(),
+        (size as u64 * opendamp::txbuild::BUDGET_PER_WITNESS_BYTE + 50).min(4_000_050)
+    );
+    doc.tx = hex(&tx.serialize());
+    let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    match args.opt("out") {
+        Some(dest) => {
+            std::fs::write(dest, format!("{out}\n")).map_err(|e| format!("writing {dest}: {e}"))?;
+            eprintln!("wrote {dest}");
+        }
+        None => println!("{out}"),
+    }
     Ok(())
 }

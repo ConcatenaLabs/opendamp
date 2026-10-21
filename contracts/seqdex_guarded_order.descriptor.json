@@ -1,0 +1,234 @@
+{
+  "descriptor": 2,
+  "template": {
+    "budget": {
+      "max": 4000050,
+      "offset": 50,
+      "per_witness_byte": 4
+    },
+    "internal_key": "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+    "name": "seqdex/guarded-order",
+    "params": [
+      {
+        "label": "The asset the order sells, which the coin holds",
+        "name": "ASSET_A",
+        "role": "asset",
+        "type": "u256"
+      },
+      {
+        "label": "The asset a fill pays in",
+        "name": "ASSET_B",
+        "role": "asset",
+        "type": "u256"
+      },
+      {
+        "label": "Price numerator: RATE_NUM atoms of ASSET_B for every RATE_DEN atoms of ASSET_A",
+        "name": "RATE_NUM",
+        "role": "number",
+        "type": "u64"
+      },
+      {
+        "label": "Price denominator: RATE_NUM atoms of ASSET_B for every RATE_DEN atoms of ASSET_A",
+        "name": "RATE_DEN",
+        "role": "number",
+        "type": "u64"
+      },
+      {
+        "label": "Least a fill takes, and least a remainder holds, in ASSET_A",
+        "name": "MIN_LOT",
+        "role": "amount",
+        "type": "u64"
+      },
+      {
+        "label": "The maker's payout script, which every fill pays",
+        "name": "MAKER",
+        "role": "script_hash",
+        "type": "u256"
+      },
+      {
+        "label": "From this lock time the refund key may take the coin back: below 500,000,000 a block height, else a Unix time compared with the median time past",
+        "name": "EXPIRY",
+        "role": "number",
+        "type": "u32"
+      },
+      {
+        "label": "The key that takes the coin back after EXPIRY",
+        "name": "REFUND_KEY",
+        "role": "pubkey",
+        "type": "Pubkey"
+      },
+      {
+        "label": "The asset input 0 of every spend must hold, explicitly",
+        "name": "GUARD_ASSET",
+        "role": "asset",
+        "type": "u256"
+      },
+      {
+        "label": "How much of GUARD_ASSET input 0 must hold, exactly",
+        "name": "GUARD_AMOUNT",
+        "role": "amount",
+        "type": "u64"
+      }
+    ],
+    "paths": [
+      {
+        "effect": "Fills the order in part: output 2k pays MAKER at least ceil(fill x RATE_NUM / RATE_DEN) of ASSET_B, and output 2k+1 holds the remainder of ASSET_A, at least MIN_LOT, at this same script. The fill is at least MIN_LOT. Input 0 holds exactly GUARD_AMOUNT of GUARD_ASSET; this coin is input k, k at least 1. PATH is Left(true).",
+        "leaf": "order",
+        "name": "fill",
+        "who": "anyone"
+      },
+      {
+        "effect": "Fills the whole order: output 2k pays MAKER at least ceil(coin x RATE_NUM / RATE_DEN) of ASSET_B, and the coin is at least MIN_LOT. Output 2k+1 is the taker's. Input 0 holds exactly GUARD_AMOUNT of GUARD_ASSET; this coin is input k, k at least 1. PATH is Left(false).",
+        "leaf": "order",
+        "name": "fill_whole",
+        "who": "anyone"
+      },
+      {
+        "effect": "Once the transaction's lock time reaches EXPIRY, the refund key takes the coin, signing the whole transaction. PATH is Right(()). Input 0 holds exactly GUARD_AMOUNT of GUARD_ASSET, and this coin is not input 0.",
+        "leaf": "order",
+        "name": "refund",
+        "who": "REFUND_KEY"
+      }
+    ],
+    "slots": [],
+    "summary": "A SeqDEX resting order that moves only beside a guard coin at input 0: anyone fills it in part or in whole by paying the maker at the order's price, the rest resting again at the same script; after expiry the refund key takes it back. Every path needs exactly GUARD_AMOUNT of GUARD_ASSET at input 0, so an asset whose rules a covenant at input 0 enforces can rest in it.",
+    "tree": {
+      "branch": [
+        {
+          "leaf": "order",
+          "simplicity": {
+            "cmr": "c676964fbb78174782e24f18b5fb3fdd65a844d7317ca43b84547807461ca659",
+            "compiler": {
+              "name": "simplicityhl",
+              "version": "0.7.2"
+            },
+            "max_cost_wu": 469,
+            "source": "seqdex_guarded_order.simf",
+            "source_sha256": "e7b289d4577bcfff60434d67c8b51c39d46d90a8796a0111826934ea12f16877",
+            "witness": [
+              {
+                "name": "ASSET_A",
+                "source": "param:ASSET_A",
+                "type": "u256"
+              },
+              {
+                "name": "ASSET_B",
+                "source": "param:ASSET_B",
+                "type": "u256"
+              },
+              {
+                "name": "RATE_NUM",
+                "source": "param:RATE_NUM",
+                "type": "u64"
+              },
+              {
+                "name": "RATE_DEN",
+                "source": "param:RATE_DEN",
+                "type": "u64"
+              },
+              {
+                "name": "MIN_LOT",
+                "source": "param:MIN_LOT",
+                "type": "u64"
+              },
+              {
+                "name": "MAKER",
+                "source": "param:MAKER",
+                "type": "u256"
+              },
+              {
+                "name": "EXPIRY",
+                "source": "param:EXPIRY",
+                "type": "u32"
+              },
+              {
+                "name": "REFUND_KEY",
+                "source": "param:REFUND_KEY",
+                "type": "Pubkey"
+              },
+              {
+                "name": "GUARD_ASSET",
+                "source": "param:GUARD_ASSET",
+                "type": "u256"
+              },
+              {
+                "name": "GUARD_AMOUNT",
+                "source": "param:GUARD_AMOUNT",
+                "type": "u64"
+              },
+              {
+                "name": "PATH",
+                "source": "spender",
+                "type": "Either<bool, ()>"
+              },
+              {
+                "name": "REFUND_SIG",
+                "source": "signature:sig_all_hash:REFUND_KEY",
+                "type": "Signature"
+              }
+            ]
+          }
+        },
+        {
+          "data": [
+            "ASSET_A",
+            "ASSET_B",
+            "RATE_NUM",
+            "RATE_DEN",
+            "MIN_LOT",
+            "MAKER",
+            "EXPIRY",
+            "REFUND_KEY",
+            "GUARD_ASSET",
+            "GUARD_AMOUNT"
+          ],
+          "leaf": "terms"
+        }
+      ]
+    },
+    "version": 1
+  },
+  "template_hash": "d68cecbf19c501abc78987833bec226e4a081ef19e484c0b060d3033b4239f60",
+  "chains": [
+    {
+      "name": "sequentia-testnet",
+      "genesis": "ddd11d54c87a2bd94400fd31ce05d8e1110bb4b78e7103f738342086fc4ea92e",
+      "bech32_hrp": "tb"
+    },
+    {
+      "name": "elementsregtest",
+      "genesis": null,
+      "bech32_hrp": "ert"
+    }
+  ],
+  "measured": {
+    "fill": {
+      "budget_wu": 6398,
+      "cost_bound_wu": 469,
+      "program_bytes": 1286,
+      "transaction": "the guard coin, the order, a payment coin and a fee coin in a third asset; the guard's return, the taker's asset, the credit, the rest, the payment change, the fee change and the fee",
+      "vsize": 1111,
+      "weight": 4442,
+      "witness_bytes": 197
+    },
+    "fill_whole": {
+      "budget_wu": 5962,
+      "cost_bound_wu": 425,
+      "program_bytes": 1177,
+      "transaction": "the guard coin, the order, a payment coin and a fee coin; the guard's return, the taker's asset, the credit, the payment change, the fee change and the fee",
+      "vsize": 1005,
+      "weight": 4019,
+      "witness_bytes": 197
+    },
+    "refund": {
+      "budget_wu": 4442,
+      "cost_bound_wu": 366,
+      "program_bytes": 731,
+      "transaction": "the guard coin, the order and a fee coin; the guard's return, the whole coin to the refund key's wallet, the fee change and the fee",
+      "vsize": 709,
+      "weight": 2833,
+      "witness_bytes": 261
+    },
+    "source": "harness/records/x2.json"
+  }
+}

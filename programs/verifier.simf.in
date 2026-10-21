@@ -361,6 +361,7 @@ fn check_input(i: u32, cu_sender: u256, w: Option<(u256, u256, [(u256, bool); %%
     }
 }
 
+%%CONTRACT_FNS%%
 fn main() {
     // 0. pi enters the program DAG, and therefore the CMR and the address, so
     // that a policy version is distinguishable on chain from a different

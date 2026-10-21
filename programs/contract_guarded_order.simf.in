@@ -1,0 +1,150 @@
+/* Contract recognition: SeqDEX's guarded order. FRAGMENT -- see src/programs.rs.
+ *
+ * Rendered into the verifier only when the policy lists the template
+ * `seqdex/guarded-order` (sequentia-contracts, templates/seqdex_guarded_order).
+ * A policy that lists no template renders the verifier without this fragment,
+ * so its programs, and every address derived from them, are the ones a policy
+ * had before contracts existed.
+ *
+ * An instance of the template is
+ *
+ *     P2TR(NUMS, TapBranch(TapLeaf_0xbe(ORDER_CMR), H_TapData(terms)))
+ *
+ * with the terms, in this order: ASSET_A, ASSET_B, RATE_NUM, RATE_DEN, MIN_LOT,
+ * MAKER, EXPIRY, REFUND_KEY, GUARD_ASSET, GUARD_AMOUNT. ORDER_CMR is the
+ * template's one commitment root, so recognising an instance needs no compiler:
+ * the verifier rebuilds the output script from the terms and compares it.
+ *
+ * The policy FIXES four of the ten terms, and the witness supplies none of them:
+ *
+ *   ASSET_A      = this asset A. The order sells A, so its fill path is live.
+ *   GUARD_ASSET  = this asset's verifier asset V, and
+ *   GUARD_AMOUNT = q. The guarded order refuses every spend, fill and refund
+ *                  alike, unless input 0 holds exactly q of GUARD_ASSET. With
+ *                  V and q fixed here, a coin of A in a recognised order can
+ *                  only ever move beside this asset's verifier, so the A that
+ *                  leaves it is scanned by this program like any other. An
+ *                  order guarded by another asset is not recognised, because
+ *                  whoever holds q of that asset could empty it unpoliced.
+ *   REFUND_KEY   = the order's OWNER: the sender, or a whitelisted key that the
+ *                  slot proves. The owner is who the order's A belongs to.
+ *
+ * The other six (ASSET_B, the price, MIN_LOT, MAKER, EXPIRY) are the maker's
+ * commercial terms and are read from the witness.
+ */
+
+/* The data leaf's hash: H_TapData over the ten terms, each big-endian at its
+ * width, with the four fixed ones taken from the policy and the owner. */
+fn order_terms_hash(t: (u256, (u64, u64), u64, u256, u32), owner: Pubkey) -> u256 {
+    let (asset_b, rate, min_lot, maker, expiry): (u256, (u64, u64), u64, u256, u32) = t;
+    let (num, den): (u64, u64) = rate;
+    let ctx: Ctx8 = jet::tapdata_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, param::ASSET_A);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, asset_b);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, num);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, den);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, min_lot);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, maker);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, expiry);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, owner);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, param::ASSET_V);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, param::AMOUNT_Q);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+/* SHA256 of the script pubkey of the guarded order owned by `owner`. */
+fn order_spk_hash(t: (u256, (u64, u64), u64, u256, u32), owner: Pubkey) -> u256 {
+    let leaf: u256 = jet::build_tapleaf_simplicity(param::ORDER_CMR);
+    let root: u256 = jet::build_tapbranch(leaf, order_terms_hash(t, owner));
+    let nums: Pubkey = 0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0;
+    let out_key: Pubkey = jet::build_taptweak(nums, root);
+    spk_hash_of_key(out_key)
+}
+
+/* The script an A coin owned by `owner` may sit at: its user covenant, or a
+ * recognised contract the owner owns. */
+fn owned_spk_hash(owner: Pubkey, terms: Option<(u256, (u64, u64), u64, u256, u32)>) -> u256 {
+    match terms {
+        None => cu_spk_hash(owner),
+        Some(t: (u256, (u64, u64), u64, u256, u32)) => order_spk_hash(t, owner),
+    }
+}
+
+/* Scan one INPUT slot when the policy lists contracts.
+ *
+ * Every A input still belongs to the sender proven in check 3: either the
+ * sender's user covenant, or a recognised contract whose owner is the sender.
+ * So filling an order is a transfer BY ITS OWNER: the owner's whitelist entry,
+ * lockup and the single-sender rule bind it, and a frozen owner's order cannot
+ * be filled or refunded. The outpoint is proven unlisted exactly as before, so
+ * the blacklist reaches a coin in a contract as it reaches any other. */
+fn check_input_c(i: u32, sender: Pubkey, cu_sender: u256, w: Option<((u256, u256, [(u256, bool); %%DEPTH%%]), Option<(u256, (u64, u64), u64, u256, u32)>)>) -> bool {
+    match jet::input_asset(i) {
+        None => false,
+        Some(a: Asset1) => match a {
+            Left(conf: (u1, u256)) => panic!(),
+            Right(id: ExplicitAsset) => match jet::eq_256(id, param::ASSET_A) {
+                false => false,
+                true => {
+                    let (bl, terms): ((u256, u256, [(u256, bool); %%DEPTH%%]), Option<(u256, (u64, u64), u64, u256, u32)>) = unwrap(w);
+                    let (bl_lo, bl_hi, bl_proof): (u256, u256, [(u256, bool); %%DEPTH%%]) = bl;
+                    let expected: u256 = match terms {
+                        None => cu_sender,
+                        Some(t: (u256, (u64, u64), u64, u256, u32)) => order_spk_hash(t, sender),
+                    };
+                    assert!(jet::eq_256(expected, unwrap(jet::input_script_hash(i))));
+                    require_bl_nonmember(i, bl_lo, bl_hi, bl_proof);
+                    true
+                },
+            },
+        },
+    }
+}
+
+/* Scan one OUTPUT slot when the policy lists contracts.
+ *
+ * An A output pays an OWNER, at that owner's user covenant or in a recognised
+ * contract the owner owns. The owner is the sender (no proof, no receive window,
+ * not counted against the limit: moving your own coins into your own order is
+ * not an acquisition), or a key the slot proves on the whitelist, whose receive
+ * window applies and whose explicit value counts against the transfer limit. A
+ * contract is therefore never a way past the whitelist: who ends up holding A,
+ * in a covenant or in a contract, is a whitelisted key. */
+fn check_output_c(i: u32, sender: Pubkey, cu_sender: u256, w: Option<(Option<(Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])>, Option<(u256, (u64, u64), u64, u256, u32)>)>) -> u64 {
+    match jet::output_amount(i) {
+        None => 0,
+        Some(av: (Asset1, Amount1)) => {
+            let (a, v): (Asset1, Amount1) = av;
+            match a {
+                Left(conf: (u1, u256)) => panic!(),
+                Right(id: ExplicitAsset) => match jet::eq_256(id, param::ASSET_A) {
+                    false => 0,
+                    true => {
+                        let spk: u256 = unwrap(jet::output_script_hash(i));
+                        match jet::eq_256(spk, cu_sender) {
+                            true => 0, // change
+                            false => {
+                                let (owner_w, terms): (Option<(Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])>, Option<(u256, (u64, u64), u64, u256, u32)>) = unwrap(w);
+                                match owner_w {
+                                    // The sender's own contract.
+                                    None => {
+                                        assert!(jet::eq_256(owned_spk_hash(sender, terms), spk));
+                                        0
+                                    },
+                                    // Another owner: proven, window open, counted.
+                                    Some(o: (Pubkey, u32, u32, [(u256, bool); %%DEPTH%%])) => {
+                                        let (y, send_after, recv_after, proof): (Pubkey, u32, u32, [(u256, bool); %%DEPTH%%]) = o;
+                                        assert!(jet::eq_256(owned_spk_hash(y, terms), spk));
+                                        require_wl_member(y, send_after, recv_after, proof);
+                                        require_height_bound(recv_after);
+                                        explicit_value(v)
+                                    },
+                                }
+                            },
+                        }
+                    },
+                },
+            }
+        },
+    }
+}

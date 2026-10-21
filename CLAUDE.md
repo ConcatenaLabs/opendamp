@@ -24,6 +24,7 @@ repository. It mirrors parts of this crate in Go and pins a copy of
 cargo build --release
 cargo test
 cargo test --test regtest -- --ignored --nocapture   # needs a node and the token-covenants tool, see README
+cargo test --test regtest_contracts -- --ignored --nocapture   # needs a node: the asset in an order
 ```
 
 There is no CI. `cargo test` and the regtest proof before every PR that touches
@@ -48,6 +49,21 @@ a program or the transaction builder are the whole gate.
   sequentia-contracts), the only place that token may live, which mints the
   verifier amount back only into a recorded verifier. Never move that token
   into a wallet.
+- **A policy that lists no contract template renders its verifier exactly as
+  before.** The recognisers are rendered in only for a listed template, and
+  the list commits in `rules_root`'s fourth slot, which is zero for none.
+  Regenerating `vectors/addresses.json` from `examples/snapshot-seq0.json` must
+  give the file byte for byte; if it does not, every live asset's verifier
+  address has moved.
+- **A contract template joins `contracts::WHITELISTABLE` only with a guard
+  and an owner term.** Every spending path must refuse a transaction without
+  q of V at input 0, and the template must name its owner, so that the
+  verifier is in every transaction that moves the contract's coin. A template
+  without the guard lets the asset leave it unpoliced. `contracts/` vendors the
+  template's descriptor, pruned programs and vectors from sequentia-contracts,
+  and `tests/contracts.rs` pins the constants in `src/contracts.rs` to them.
+  The template is immutable: a change there is a new template, and so a new
+  entry here.
 - **dmt-v1 guards hash under domain `0x03`**, never as key leaves; `recv_after`
   never binds the sender's own change; `pi` is a compile-time parameter that
   reaches the program. Each of these was once wrong; `STATUS.md` section 0 has

@@ -4,6 +4,7 @@
 //! See `DESIGN.md` for the protocol, `SPEC-dmt-v1.md` here for the whitelist tree format, and
 //! `STATUS.md` for exactly what is consensus-enforced.
 
+pub mod contracts;
 pub mod dmt;
 pub mod hexutil;
 pub mod net;

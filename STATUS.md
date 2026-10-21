@@ -15,7 +15,9 @@ enforced by consensus — confinement, the whitelist, the blacklist, the transfe
 limit and the height windows. Removing a holder from the whitelist stops that
 holder SPENDING; listing an outpoint stops that UTXO alone; a limit caps what
 leaves a sender in one transfer; a lockup or receive window binds to a height.
-Every one of them is proved against a real node (section 4).**
+Every one of them is proved against a real node (section 4). A policy can also
+list contract templates, and an asset resting in a listed order stays under
+every one of those predicates on the way in, inside and on the way out.**
 
 **And the covenants no longer carry any padding.** A canonical transfer is
 **1,582 vB**, the node's own vsize, against roughly 7,459 vB before. Two things
@@ -127,12 +129,43 @@ check: a coin of A behind an asset commitment would otherwise skip the owner
 scan entirely. The cost is that fees must come from an explicit UTXO, which
 matches transparent-by-default and is what the builder does anyway.
 
+### P(pi) with a contract list (`programs/contract_guarded_order.simf.in`)
+
+A policy that lists `seqdex/guarded-order` (DESIGN.md section 2.4) renders
+every verifier leaf with a recogniser for it. Proved in
+`tests/regtest_contracts.rs` (section 4):
+
+1. **Recognition.** An A output or input may sit at a guarded order whose
+   script the verifier rebuilds from the template's root and the witness's
+   terms, with four terms fixed by the policy: the order sells A, its guard is
+   exactly q of V, and its refund key is the owner. An order of another
+   template, guarded by another asset, guarded by another amount, selling
+   another asset, or owned by a key not on the whitelist is not recognised.
+2. **Ownership.** An order owned by the sender is the sender's change. One
+   owned by another key is a payment to that key: its whitelist proof and
+   receive window apply, and its value counts against the limit. Every A
+   input, user covenant or order, is the sender's. Filling an order is
+   therefore a transfer by its owner: a removed owner's order does not fill,
+   and an order fills with no signature of its owner's in the transaction.
+3. **Leaving.** Every A output of a transaction that spends an order is
+   scanned: a fill or a refund cannot pay A to a plain script, to a holder off
+   the whitelist, or into an order the list does not name.
+4. **The guard.** The order's own program refuses a fill or refund without q
+   of V at input 0, and beside q of any other asset there. So the verifier is
+   in every transaction that moves the order's coin. This is
+   sequentia-contracts' template and its harness test `x2`.
+5. **The list.** It is committed in pi. A policy that drops the template
+   cannot spend an order of it, and listing it again frees the order.
+
 ### G(I), the issuer path (`programs/issuer.simf`)
 
 `bip_0340_verify(I, sig_all_hash, sigma)` — the update path (recreate C_V under
 pi') and the halt path (burn V). Compromise of I permits policy revocation or
 denial of service, never theft: no path lets the issuer spend a holder's C_U
-output.
+output. A holder's coin in a guarded order is the exception the design states:
+with G(I) at input 0 the guard is met and no policy runs, so I alone can fill
+an order on its terms (the maker is paid its price) and send the A anywhere.
+That is proved, not just stated, in `tests/regtest_contracts.rs` (proof I).
 
 ### Structural properties that follow
 
@@ -287,6 +320,33 @@ reaches for most often carries a 65-byte control block and the rest carry 129.
 | finalized transfer | 4,858 B, **1,582 vB** |
 | per block, at 89,999 vB of payload | **56** (was 12) |
 
+### With the guarded order listed
+
+Listing the template adds a recogniser to every slot, which costs the same
+whether or not a transfer uses it, because the static bound covers the whole
+program. `tests/cost_profile.rs` asserts that every leaf still pays for itself
+from the smallest legitimate witness, and that listing adds under 40%.
+
+| leaf | static cost | min witness stack | margin | listing adds |
+|---|---|---|---|---|
+| `p3x5` |  9,639,806 mWU | 4,181 B | 1.74x | 28.1% |
+| `p3x4` |  8,229,274 mWU | 4,156 B | 2.03x | 28.3% |
+| `p4x6` | 12,542,736 mWU | 4,233 B | 1.35x | 29.7% |
+| `p5x7` | 15,446,700 mWU | 4,287 B | 1.11x | 30.8% |
+
+A spend is charged its pruned program's cost. The transactions of the regtest
+proof:
+
+| transaction | leaf | vsize | verifier stack | cost | budget |
+|---|---|---|---|---|---|
+| alice's A into her own order | `p3x5` | 1,575 vB | 3,606 B | 4,889 WU | 14,474 WU |
+| a fill in part, the A to bob | `p5x7` | 2,224 vB | 4,391 B | 15,224 WU | 17,614 WU |
+| the refund of the rest | `p3x4` | 1,594 vB | 3,537 B | 4,041 WU | 14,198 WU |
+| a whole fill | `p4x6` | 2,095 vB | 4,298 B | 11,273 WU | 17,242 WU |
+
+The order's own input carries 1,580 bytes of witness in a fill (program 1,286 B,
+witness 197 B).
+
 ### Where the cost goes
 
 | component | static cost |
@@ -366,6 +426,36 @@ rather than being stable):
 Proofs 11a–11c are new, and are the regression test for the change/receive-window
 defect: before the fix, 11b was impossible.
 
+### The asset in an order: `tests/regtest_contracts.rs`
+
+```
+cargo test --test regtest_contracts -- --ignored --nocapture
+```
+
+The node runs with `-par=1`, so a block refused for a script names the script's
+error. Every negative is forced into a block with `generateblock` beside an
+accepted control. The control differs only in the property under test, and
+carries the control's pruned verifier (the splice below). Each input's program
+is also run locally, which names the input that fails: input 0 is the verifier
+and input 1 the order. Every fee is paid in an issued asset.
+
+| proof | result |
+|---|---|
+| E. alice moves A from her C_U into her own guarded order | mined |
+| into `seqdex/order`, which is not on the list | refused, input 0, `Assertion failed inside jet` |
+| into a guarded order guarded by another asset; by q+1; selling another asset | refused, input 0, each |
+| into an order owned by carol, who is not whitelisted, under bob's proof | refused, input 0 |
+| F. the order filled in part, the A to bob; alice signs nothing | mined |
+| the fill paying the A to a plain key; to C_U(carol); into `seqdex/order` | refused, input 0, each |
+| the fill with no verifier at input 0; beside q of another asset there | refused, input 1 (the order's guard) |
+| R. after the expiry, alice refunds the rest into her C_U | mined |
+| the refund paying the A to C_U(carol); to a plain key | refused, input 0, each |
+| W. a second order, filled whole to bob | mined |
+| P. an update removing alice: her order refused under bob's identity, bob's order with the same terms fills | refused, input 0 / mined |
+| P. an update dropping the template: her order refused | refused, input 0 |
+| P. an update listing it again: her order fills | mined |
+| I. G(I) at input 0 fills an order and sends the A to a plain key | mined |
+
 ### On the refusal proofs, precisely
 
 Two distinct techniques, because they prove different things:
@@ -441,6 +531,7 @@ leaf's control block against the Rust vectors.
 
 Nothing in the covenant. What is left is integration and operations.
 
+
 1. **More than three regulated inputs per transfer.** A wider shape is a leaf,
    not a redesign: add it to `SHAPES` and the taptree grows by one leaf. The
    menu stops at `p5x7` because the leaf count has to stay a power of two plus
@@ -472,3 +563,9 @@ Nothing in the covenant. What is left is integration and operations.
    an unenforced 0xbe leaf is anyone-can-spend. And the chain must be granting
    four weight units per witness byte: Sequentia Core 24.3.0, and on the live
    testnet **from height 101,810**, not before.
+9. **Contracts beyond the order.** A vault, a sale or an escrow can be listed
+   only as a guarded variant with an owner term (DESIGN.md section 2.4). None
+   exists yet. One transaction fills the orders of one owner only, by the
+   single-sender rule. A pair of two network-enforced assets cannot trade in
+   one transaction, because both verifiers would need input 0. SeqDEX's book
+   and the wallets do not yet build guarded orders.
