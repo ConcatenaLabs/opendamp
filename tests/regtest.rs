@@ -477,7 +477,24 @@ fn regtest_end_to_end() {
         "-named", "issueasset", "assetamount=0.00100000", "tokenamount=1", "blind=false", &fee_arg,
     ]);
     let asset_v = asset_from_display(issue_v["asset"].as_str().unwrap());
+    // An issuance with a denomination other than the default 8: Sequentia
+    // writes it as one byte after the inflation keys, which stock rust-elements
+    // does not know. It must parse, carry its denomination and re-serialise to
+    // the node's own bytes, or this crate is not reading Sequentia transactions.
+    let issue_d = node.cli_json(&[
+        "-named", "issueasset", "assetamount=5", "tokenamount=0", "blind=false",
+        "denomination=2", &fee_arg,
+    ]);
     node.generate(1, &mine_addr);
+    let d_txid = issue_d["txid"].as_str().expect("issuance txid");
+    let d_vin = issue_d["vin"].as_u64().expect("issuance input") as usize;
+    let d_hex = node.cli(&["getrawtransaction", d_txid]);
+    let d_tx: opendamp::elements::Transaction = opendamp::elements::encode::deserialize(&opendamp::hexutil::unhex(&d_hex).expect("hex"))
+        .expect("a Sequentia issuance parses");
+    assert_eq!(d_tx.txid().to_string(), d_txid, "parsed issuance has the node's txid");
+    assert_eq!(d_tx.input[d_vin].asset_issuance.denomination, 2, "denomination survives the parse");
+    assert_eq!(tx_hex(&d_tx), d_hex, "issuance re-serialises byte for byte");
+    println!("PROOF 0: a Sequentia issuance (denomination 2) parses and re-serialises: {d_txid}");
     println!("asset A {asset_a}");
     println!("asset V {asset_v}");
 
@@ -613,6 +630,9 @@ fn regtest_end_to_end() {
     // the node rather than derived.
     let vsize = confirmed["vsize"].as_u64().expect("vsize");
     let per_block = 89_999 / vsize;
+    // DESIGN.md section 7 quotes this figure; a change to the programs or the
+    // builder that moves it must update the document in the same change.
+    assert_eq!(vsize, 1_582, "canonical transfer size quoted in DESIGN.md");
     println!(
         "SIZE: the canonical transfer is {vsize} vB, so {per_block} fit in a \
          block of 89,999 vB (the padded single-shape program managed 12)"
