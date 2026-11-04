@@ -32,6 +32,11 @@ a program or the transaction builder are the whole gate.
 
 ## Things that are expensive to get wrong
 
+- **Transactions are Sequentia's, not Elements'.** A Sequentia issuance carries
+  a denomination byte that stock `elements` does not read. The
+  `[patch.crates-io]` in `Cargo.toml` supplies Sequentia's build; keep it on
+  the same SWK commit as smplx, and never drop it to get a build through.
+
 - **A program change changes every address.** The CMRs in
   `vectors/addresses.json` are what wallets and `openampd` verify programs
   against, and an asset already issued is bound to its programs for life. When

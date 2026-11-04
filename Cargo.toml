@@ -9,12 +9,24 @@ license = "MIT"
 simplicityhl = "0.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Sequentia's transaction encoding: the issuance denomination byte and the
+# Bitcoin anchor in the block header. Naming the crate here only turns on its
+# `sequentia` feature; the patch below supplies the code.
+elements = { version = "0.25.3", features = ["sequentia"] }
 
 [[bin]]
 name = "opendamp"
 path = "src/bin/opendamp.rs"
 
 [dev-dependencies]
+
+# `simplicityhl` and `simplicity-lang` name crates.io `elements 0.25`, so a
+# patch is the only way to give all of them, and this crate, the same Sequentia
+# build of it. The same patch, at the same SWK commit, as smplx declares (its
+# SEQUENTIA.md). A patch applies only in the workspace that declares it: a
+# project depending on this crate declares it too.
+[patch.crates-io]
+elements = { git = "https://github.com/ConcatenaLabs/SWK", rev = "87a9f5e7f98356a2c00712884019079566aacfec" }
 
 [profile.dev]
 # The BitMachine and secp are slow unoptimized; covenant tests run much faster with opt.

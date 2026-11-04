@@ -225,12 +225,12 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "elements"
 version = "0.25.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83c63a04238f4b7f3564fe9705921452c2900efd00982545e5c634fac9024fe2"
+source = "git+https://github.com/ConcatenaLabs/SWK?rev=87a9f5e7f98356a2c00712884019079566aacfec#87a9f5e7f98356a2c00712884019079566aacfec"
 dependencies = [
  "bech32",
  "bitcoin",
  "secp256k1-zkp",
+ "serde_json",
 ]
 
 [[package]]
@@ -376,6 +376,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 name = "opendamp"
 version = "0.1.0"
 dependencies = [
+ "elements",
  "serde",
  "serde_json",
  "simplicityhl",

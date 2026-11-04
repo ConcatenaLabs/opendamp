@@ -37,6 +37,12 @@ sequentia-contracts' `token-covenants` tool for the verifier asset's token:
 beside this checkout. `regtest_contracts` needs the node alone; it writes every
 proof's outcome to `$OPENDAMP_CONTRACTS_RECORD` when that is set.
 
+Transactions are read and written with Sequentia's build of `elements`, which
+carries the issuance denomination byte and the Bitcoin anchor in the block
+header. `Cargo.toml` takes it with a `[patch.crates-io]` entry naming an SWK
+commit, the same one smplx names; a project that depends on this crate declares
+the same patch. `tests/sequentia_encoding.rs` fails on a build without it.
+
 ## The tool
 
 Every command takes `--snapshot FILE`, the policy snapshot in its published
