@@ -1,0 +1,41 @@
+# The offline tests on every pull request and on main: `cargo test` (builder, covenants,
+# cosigner) on Rust 1.97.1, the testnet server's, and the Go mirror of the DMT encoding on
+# Go 1.25.0, the server's Go.
+#
+# Not run here, by design (README, "Build and test"):
+# - SKIPPED (needs a sequentiad and the token-covenants tool): the regtest proofs
+#   (`--test regtest`, `--test regtest_contracts`), which are #[ignore]d and run with --ignored.
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+  gomirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: false   # the mirror has no dependencies
+      - working-directory: gomirror
+        run: go test ./...

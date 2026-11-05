@@ -27,8 +27,9 @@ cargo test --test regtest -- --ignored --nocapture   # needs a node and the toke
 cargo test --test regtest_contracts -- --ignored --nocapture   # needs a node: the asset in an order
 ```
 
-There is no CI. `cargo test` and the regtest proof before every PR that touches
-a program or the transaction builder are the whole gate.
+CI (`.github/workflows/tests.yml`) runs `cargo test` and the Go mirror's tests on every pull
+request and on `main`. The regtest proof needs a node and is not run there, so run it before
+every PR that touches a program or the transaction builder.
 
 ## Things that are expensive to get wrong
 
